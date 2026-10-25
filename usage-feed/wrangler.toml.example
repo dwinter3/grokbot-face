@@ -1,0 +1,25 @@
+# Copy to wrangler.toml (git-ignored) and fill in your own IDs.
+name = "grokbot-usage-feed"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[vars]
+SEARCH_TERM = "<your Cursor team member email or name>"
+
+[[kv_namespaces]]
+binding = "FEED"
+id = "<KV_NAMESPACE_ID>"
+
+[ai]
+binding = "AI"
+
+[observability]
+enabled = true
+
+[triggers]
+crons = ["*/15 * * * *", "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"]
+
+# Secrets (never in this file):
+#   npx wrangler secret put CURSOR_KEY   # Cursor team admin API key
+#   npx wrangler secret put FEED_TOKEN   # random URL token, >= 20 chars [A-Za-z0-9_-]

@@ -1,0 +1,37 @@
+# secrets and local config (never commit)
+*.keystore
+*.jks
+*.p12
+*.pem
+*.key
+.env
+.env.*
+!config.example.env
+local.env
+usage-feed/.env.local
+usage-feed/wrangler.toml
+.wrangler/
+.dev.vars
+
+# build outputs
+android/build/
+android/src/assets/
+*.apk
+*.idsig
+*.aab
+
+# downloaded at build time (see fetch-vendor.sh / fetch-mediapipe.sh)
+android/vendor/*.aar
+android/vendor/vosk-model-*/
+android/vendor/*.zip
+sense/mp/wasm/
+sense/mp/models/
+sense/mp/vision_bundle.mjs
+sense/mp/LICENSE
+
+# media, scratch, editors
+*.mp4
+*.bak*
+node_modules/
+.gradle/
+.DS_Store

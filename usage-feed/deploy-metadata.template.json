@@ -1,0 +1,26 @@
+{
+  "main_module": "worker.js",
+  "compatibility_date": "2026-10-01",
+  "observability": {
+    "enabled": true
+  },
+  "keep_bindings": [
+    "secret_text"
+  ],
+  "bindings": [
+    {
+      "type": "kv_namespace",
+      "name": "FEED",
+      "namespace_id": "<KV_NAMESPACE_ID>"
+    },
+    {
+      "type": "plain_text",
+      "name": "SEARCH_TERM",
+      "text": "<your Cursor team member email or name>"
+    },
+    {
+      "type": "ai",
+      "name": "AI"
+    }
+  ]
+}
