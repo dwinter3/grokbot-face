@@ -5,8 +5,8 @@
 set -euo pipefail
 # Optional local overrides (git-ignored): USAGE_FEED_URL, KEYSTORE, KS_PASS, KEY_PASS, KS_ALIAS
 _H=$(cd "$(dirname "$0")" && pwd); [ -f "$_H/local.env" ] && . "$_H/local.env"
-export JAVA_HOME=${JAVA_HOME:-$(ls -d ~/opt/jdk-17* | head -1)}
-export PATH=$JAVA_HOME/bin:$PATH
+JAVA_HOME=${JAVA_HOME:-$(ls -d ~/opt/jdk-17* 2>/dev/null | head -1)}
+if [ -n "$JAVA_HOME" ]; then export JAVA_HOME PATH=$JAVA_HOME/bin:$PATH; fi
 SDK=${ANDROID_SDK_ROOT:-$HOME/opt/android-sdk}
 BT=$SDK/build-tools/35.0.0
 JAR=$SDK/platforms/android-34/android.jar
