@@ -23,7 +23,16 @@ NI=${GBF_NONINTERACTIVE:-0}
 if [ -t 1 ]; then G=$'\033[32m' R=$'\033[31m' Y=$'\033[33m' N=$'\033[0m'; else G= R= Y= N=; fi
 c_ok() { printf '  %sok%s   %s\n' "$G" "$N" "$*"; }; c_no() { printf '  %smiss%s %s\n' "$R" "$N" "$*"; }; c_opt() { printf '  %sopt%s  %s\n' "$Y" "$N" "$*"; }
 die() { echo "error: $*" >&2; exit 1; }
-load() { [ -f "$FEED_ENV" ] && . "$FEED_ENV"; [ -f "$APP_ENV" ] && . "$APP_ENV"; TOKEN_FILE=${TOKEN_FILE:-$HOME/.grokbot-usage-feed/token.env}; [ -f "$TOKEN_FILE" ] && . "$TOKEN_FILE"; return 0; }
+VARS="CF_ACCOUNT_ID KV_NAMESPACE_ID WORKER_NAME WORKERS_SUBDOMAIN SEARCH_TERM TOKEN_FILE FEED_TOKEN USAGE_FEED_URL KEYSTORE KS_ALIAS KS_PASS KEY_PASS TABLET_ADDR"
+# Load saved config; values already in the environment win over saved files.
+load() {
+  local k; local -A keep=()
+  for k in $VARS; do [ -n "${!k+x}" ] && keep[$k]=${!k}; done
+  [ -f "$FEED_ENV" ] && . "$FEED_ENV"; [ -f "$APP_ENV" ] && . "$APP_ENV"
+  TOKEN_FILE=${keep[TOKEN_FILE]:-${TOKEN_FILE:-$HOME/.grokbot-usage-feed/token.env}}; [ -f "$TOKEN_FILE" ] && . "$TOKEN_FILE"
+  for k in "${!keep[@]}"; do printf -v "$k" '%s' "${keep[$k]}"; done
+  return 0
+}
 # ask VAR "prompt" [default] [secret]
 ask() {
   local v=$1 p=$2 d=${3:-} s=${4:-} cur=${!1:-}
@@ -165,7 +174,7 @@ verify() {
   if [ -f "$APK" ] && [ -x "$(sdk)/build-tools/35.0.0/aapt2" ]; then
     "$(sdk)/build-tools/35.0.0/aapt2" dump permissions "$APK" | grep -q INTERNET && c_ok "feed baked in (INTERNET permission present)" || c_opt "offline build (no INTERNET permission)"
   fi
-  [ -n "${USAGE_FEED_URL:-}" ] && { local code; code=$(curl -s -o /dev/null -w '%{http_code}' "$USAGE_FEED_URL" || echo 000); [ "$code" = 200 ] && c_ok "feed reachable (HTTP 200)" || c_opt "feed HTTP $code"; }
+  [ -n "${USAGE_FEED_URL:-}" ] && { local code; code=$(curl -s -o /dev/null -w "%{http_code}" "$USAGE_FEED_URL" 2>/dev/null || true); code=${code:-000}; [ "$code" = 200 ] && c_ok "feed reachable (HTTP 200)" || c_opt "feed HTTP $code"; }
   local dev; dev=$(adbx devices 2>/dev/null | awk 'NR>1 && $2=="device"{print $1; exit}' || true)
   if [ -n "$dev" ]; then
     adbx -s "$dev" shell pm list packages 2>/dev/null | grep -q "$PKG" && c_ok "installed on $dev ($(adbx -s "$dev" shell dumpsys package $PKG | sed -n 's/.*versionName=//p' | head -1))" || c_opt "not installed on $dev"
