@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 David Winter
-// Grok Bot Face v1.4 - MediaPipe detection off the main thread (dedicated module worker).
+// Grok Bot Face v1.4 (+v1.12 finger mask, v1.12.2 hand box + confidence) - MediaPipe detection off the main thread (dedicated module worker).
 // Receives one downscaled camera frame at a time as a transferred ImageBitmap, returns only a
 // few numbers (face boxes, blendshape scores, hand point, brightness). Frames are closed right
 // after use; nothing is kept, stored, or sent anywhere.
@@ -41,6 +41,13 @@ function fingersOpen(lm) {
   for (const [tip, pip] of [[8, 6], [12, 10], [16, 14], [20, 18]]) if (d(lm[tip], lm[0]) > d(lm[pip], lm[0]) * 1.1) n++;
   return n;
 }
+// v1.12: per-finger extended bits (index=1, middle=2, ring=4, pinky=8) for the rock-paper-scissors fallback
+function fingerMask(lm) {
+  const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  let m = 0;
+  [[8, 6], [12, 10], [16, 14], [20, 18]].forEach(([tip, pip], i) => { if (d(lm[tip], lm[0]) > d(lm[pip], lm[0]) * 1.1) m |= 1 << i; });
+  return m;
+}
 
 function detect(bmp, ms, wantHands, wantLum) {
   const t0 = performance.now();
@@ -62,8 +69,10 @@ function detect(bmp, ms, wantHands, wantLum) {
     const g = gestRec.recognizeForVideo(bmp, ts + 0.5);
     if (g.landmarks && g.landmarks.length) {
       const lm = g.landmarks[0], top = g.gestures && g.gestures[0] && g.gestures[0][0];
+      let bx0 = 1, by0 = 1, bx1 = 0, by1 = 0; for (const p of lm) { if (p.x < bx0) bx0 = p.x; if (p.x > bx1) bx1 = p.x; if (p.y < by0) by0 = p.y; if (p.y > by1) by1 = p.y; }
+      const hd = g.handedness && g.handedness[0] && g.handedness[0][0];
       const gesture = top ? top.categoryName : '';
-      hand = { x: lm[9].x, y: lm[9].y, gesture, score: top ? top.score : 0, open: gesture === 'Open_Palm' || fingersOpen(lm) >= 3 };
+      hand = { x: lm[9].x, y: lm[9].y, bw: bx1 - bx0, bh: by1 - by0, bcx: (bx0 + bx1) / 2, bcy: (by0 + by1) / 2, conf: hd ? hd.score : 0, gesture, score: top ? top.score : 0, open: gesture === 'Open_Palm' || fingersOpen(lm) >= 3, mask: fingerMask(lm) };
     } else hand = null;
   }
   let bright;

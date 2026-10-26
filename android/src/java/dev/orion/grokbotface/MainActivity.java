@@ -42,7 +42,7 @@ public class MainActivity extends Activity {
         if (requestCode == REQ_SENSES) { FaceWeb.senseStart(web); mic.setActive(true); }
     }
 
-    // adb debug hook (v1.9): am start -n dev.orion.grokbotface/.MainActivity --ez breaking true | --es look news|harness|pong|moment|...
+    // adb debug hook (v1.9): am start -n dev.orion.grokbotface/.MainActivity --ez breaking true | --es look news|harness|pong|moment|rps|rpsfist|...
     // Only whitelisted, fixed JS calls; no URL or script is ever taken from the intent.
     @Override
     protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); debugHook(intent); }
@@ -53,6 +53,8 @@ public class MainActivity extends Activity {
         final String js;
         if (brk) js = "window.grokbot&&grokbot.breaking&&grokbot.breaking()";
         else if ("moment".equals(look)) js = "window.grokbot&&grokbot.newsMoment&&grokbot.newsMoment()";
+        else if ("rps".equals(look)) js = "window.grokbot&&grokbot.rpsStart&&grokbot.rpsStart()";   // v1.12 rock-paper-scissors
+        else if ("rpsfist".equals(look)) js = "window.grokbot&&grokbot.rpsSimFist&&grokbot.rpsSimFist()";   // v1.12.1 synthetic held fist (test)
         else if (look != null && look.matches("pills|blob|chars|clock|pong|chess|checkers|pacman|news|harness")) js = "window.grokbot&&grokbot.showLook&&grokbot.showLook('" + look + "')";
         else return;
         web.postDelayed(() -> { if (web != null) web.evaluateJavascript(js, null); }, brk ? 300 : 100);

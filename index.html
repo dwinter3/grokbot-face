@@ -13,17 +13,25 @@
   html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden;
     cursor:none;touch-action:none;overscroll-behavior:none;
     -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
-  canvas{position:fixed;inset:0;width:100vw;height:100vh;display:block;background:#000}
+  canvas{position:fixed;top:0;left:0;height:100vh;display:block;background:#000}
+  #c{width:calc(100vw - var(--gw, 0px))}
+  /* v1.11 thermostat burndown gauge docked on the right; the face canvas gets the rest of the width */
+  #g{right:0;left:auto;width:var(--gw, 0px);display:none}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<canvas id="g"></canvas>
 <script>
 (() => {
 'use strict';
 const cv = document.getElementById('c');
-const ctx = cv.getContext('2d', { alpha: false });   // opaque canvas: cheaper compositing
+let ctx = cv.getContext('2d', { alpha: false });   // (let: v1.12 RPS hand borrows pill() on an offscreen ctx)   // opaque canvas: cheaper compositing
 let W = 0, H = 0, DPR = 1, U = 1; // U = 1vmin in device px
+const gv = document.getElementById('g');
+const gctx = gv.getContext('2d', { alpha: false });
+let thermoOn = false, TGW = 0, TGH = 0, gwCss = 0;                  // v1.11 gauge strip (device px)
+const thermo = { shown: -1, key: '', flash: -1e9, lastPct: null, levelY: 0, a: 0.7, rect: null };
 
 // Eye geometry in vmin (matches billboard proportions)
 const EW = 12.5, EH = 25, SEP = 17;
@@ -34,8 +42,15 @@ const EW = 12.5, EH = 25, SEP = 17;
 const RS_MAX = +(new URLSearchParams(location.search).get('rs')) || 1.3;
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, RS_MAX, 3);
-  W = Math.round(innerWidth * DPR); H = Math.round(innerHeight * DPR);
+  // v1.11: ~11.5% of the width (min 72 / max 300 CSS px) goes to the thermostat gauge on the right
+  gwCss = thermoOn ? Math.round(Math.max(72, Math.min(300, innerWidth * 0.115))) : 0;
+  document.documentElement.style.setProperty('--gw', gwCss + 'px');
+  gv.style.display = thermoOn ? 'block' : 'none';
+  W = Math.round((innerWidth - gwCss) * DPR); H = Math.round(innerHeight * DPR);
   cv.width = W; cv.height = H;
+  TGW = Math.round(gwCss * DPR); TGH = H;
+  if (thermoOn) { gv.width = Math.max(1, TGW); gv.height = Math.max(1, TGH); }
+  thermo.key = '';
   U = Math.min(W, H) / 100;
 }
 addEventListener('resize', resize); resize();
@@ -57,8 +72,13 @@ function resetTarget(s) { s.fx = 0; s.fy = 0; s.frot = 0; s.fs = 1; s.bsq = 0; s
 const Q = new URLSearchParams(location.search);
 const APP = Q.get('app') === '1' || /GrokBotFace/.test(navigator.userAgent);
 const BLOB_COLORS = ['#1A86FF', '#FF6A2B', '#2BC46B', '#8B5CF6'];
-const THEMES = ['pills', 'blob', 'chars', 'clock', 'pong', 'chess', 'checkers', 'pacman', 'news', 'harness'];
-let theme = THEMES.includes(Q.get('theme')) ? Q.get('theme') : 'pills';
+const THEMES = ['pills', 'blob', 'pumpkin', 'chars', 'clock', 'pong', 'chess', 'checkers', 'pacman', 'news', 'harness'];
+// v1.13: Grok Bot pumpkin. Halloween week (Oct 25 - Nov 1) it is the opening look and a frequent pick; Oct 1 - Nov 1 it
+// joins auto-rotation; the rest of the year it stays a swipe away. ?halloween=1|0 forces the window for testing.
+const HALLOWEEN = (() => { const d = new Date(), m = d.getMonth(), day = d.getDate(), f = Q.get('halloween');
+  const week = f ? f === '1' : (m === 9 && day >= 25) || (m === 10 && day <= 1);
+  return { week, season: f ? f === '1' : week || m === 9 }; })();
+let theme = THEMES.includes(Q.get('theme')) ? Q.get('theme') : HALLOWEEN.week ? 'pumpkin' : 'pills';
 let colorIdx = Math.floor(Math.random() * BLOB_COLORS.length);
 let trans = null;            // {start, dur, to}
 let enter = 1;               // 0 = scene offscreen below, 1 = in place
@@ -101,7 +121,8 @@ function rotatePick() {
     if (cat === 'bots') {
       const roll = Math.random();
       if (roll < ROTATE.groupShare) pickL = { theme: 'chars', group: 2 + (Math.random() < 0.4 ? 1 : 0), key: 'group' };
-      else { const opts = [{ theme: 'pills', key: 'pills' }, { theme: 'blob', key: 'blob' }].concat(ROSTER.map(c => ({ theme: 'chars', char: c, key: 'chars:' + c.name }))); pickL = pick(opts); }
+      else if (HALLOWEEN.week && Math.random() < 0.4) pickL = { theme: 'pumpkin', key: 'pumpkin' };   // v1.13: spooky season
+      else { const opts = [{ theme: 'pills', key: 'pills' }, { theme: 'blob', key: 'blob' }].concat(HALLOWEEN.season ? [{ theme: 'pumpkin', key: 'pumpkin' }] : [], ROSTER.map(c => ({ theme: 'chars', char: c, key: 'chars:' + c.name }))); pickL = pick(opts); }
     } else if (cat === 'games') {
       const opts = ['pong'].concat(GAME_THEMES).filter(g => rot.games.indexOf(g) < 0); pickL = { theme: pick(opts.length ? opts : ['pong'].concat(GAME_THEMES)) }; pickL.key = pickL.theme;
     } else pickL = { theme: cat, key: cat };
@@ -110,7 +131,7 @@ function rotatePick() {
   return { theme: 'pills', key: 'pills' };
 }
 function rotateTick() {                                              // called every frame (awake, no adventure, no takeover)
-  if (trans || adv || bk.on || card.open) return;
+  if (trans || adv || bk.on || card.open || rps.on) return;
   if (gameLook(theme)) rot.lastGameAt = now;
   const due = now > nextThemeAt || (gameLook(theme) && gameEnded());
   if (!due) return;
@@ -127,17 +148,18 @@ function switchTheme(to, spec) {
 const backOut = x => { const c = 1.9; x = clamp(x, 0, 1) - 1; return 1 + (c + 1) * x * x * x + c * x * x; };
 // ---------- swipe between looks (v1.3) ----------
 let swipeX = 0, swipeSq = 0, swipeRot = 0;
-function looks() { return [{ theme: 'pills' }, { theme: 'blob' }].concat(ROSTER.map(c => ({ theme: 'chars', char: c })), [{ theme: 'pong' }], GAME_THEMES.map(t => ({ theme: t })), newsReady() ? NEWS_THEMES.map(t => ({ theme: t })) : []); }
+function looks() { return [{ theme: 'pills' }, { theme: 'blob' }, { theme: 'pumpkin' }].concat(ROSTER.map(c => ({ theme: 'chars', char: c })), [{ theme: 'pong' }], GAME_THEMES.map(t => ({ theme: t })), newsReady() ? NEWS_THEMES.map(t => ({ theme: t })) : []); }
 function currentLook() {
-  if (theme === 'pills') return 0; if (theme === 'blob') return 1;
-  if (theme === 'chars' && cast[0]) return 2 + ROSTER.indexOf(cast[0]);
-  if (theme === 'pong') return 2 + ROSTER.length;
-  if (isGameTheme(theme)) return 3 + ROSTER.length + GAME_THEMES.indexOf(theme);
-  if (isNewsTheme(theme) && newsReady()) return 3 + ROSTER.length + GAME_THEMES.length + NEWS_THEMES.indexOf(theme);
+  if (theme === 'pills') return 0; if (theme === 'blob') return 1; if (theme === 'pumpkin') return 2;
+  if (theme === 'chars' && cast[0]) return 3 + ROSTER.indexOf(cast[0]);
+  if (theme === 'pong') return 3 + ROSTER.length;
+  if (isGameTheme(theme)) return 4 + ROSTER.length + GAME_THEMES.indexOf(theme);
+  if (isNewsTheme(theme) && newsReady()) return 4 + ROSTER.length + GAME_THEMES.length + NEWS_THEMES.indexOf(theme);
   return -1;                                                       // clock
 }
 function swipeTo(dir) {                                            // dir: +1 next (swipe left), -1 previous (swipe right)
   if (trans) return;
+  if (rps.on) rpsEnd('swipe');                                     // v1.12: a swipe ends the game
   const L = looks(), i = currentLook(), n = L.length;
   const j = i < 0 ? (dir > 0 ? 0 : n - 1) : (i + dir + n) % n;
   if (adv) advCancel();                                            // a swipe always wins over an adventure
@@ -218,7 +240,10 @@ let lookOverride = null;      // {x,y,until}
 let showMark = true;
 try { showMark = localStorage.getItem('grokbot.mark') !== '0'; } catch (e) {}
 
-function scheduleBlink(t) { blink.next = t + rnd(1.8, 6); blink.double = Math.random() < 0.22; }
+function scheduleBlink(t) {                                       // v1.12: quicker blinks when on pace to overspend
+  const nv = typeof nervous === 'function' ? nervous() : 0, rx = typeof relaxed === 'function' ? relaxed() : 0;
+  blink.next = t + rnd(1.8, 6) * (1 - 0.4 * nv) * (1 + 0.15 * rx); blink.double = Math.random() < 0.22 + 0.15 * nv;
+}
 // close fast (40%), open slower (60%), C1-continuous ends -> no snap at the start/end of a blink
 function blinkCurve(x) { return x < 0.4 ? ease(x / 0.4) : 1 - ease((x - 0.4) / 0.6); }
 function blinkLid(t) {
@@ -405,9 +430,9 @@ cv.addEventListener('pointerdown', e => {
   touch = { x, y }; pressPos = { x, y };
   const edge = 24 * DPR;
   swipeStart = (x > edge && x < W - edge && y > edge && y < H - edge) ? { x, y, t: now } : null;   // system edge gestures excluded
-  const onGauge = inGauge(x, y), onMark = !onGauge && inMark(x, y);
-  hold = { t0: now, x, y, onMark, onGauge, fired: false };
-  if (!onMark && !onGauge) taps.push({ t: now, x, y }); while (taps.length && now - taps[0].t > 0.65) taps.shift();
+  const onGauge = inGauge(x, y), onMark = !onGauge && inMark(x, y), onRps = !onGauge && !onMark && !onNews && !sleeping && inRpsTap(x, y);
+  hold = { t0: now, x, y, onMark, onGauge, onRps, fired: false };
+  if (!onMark && !onGauge && !onRps) taps.push({ t: now, x, y }); while (taps.length && now - taps[0].t > 0.65) taps.shift();
   const near = taps.length > 1 && Math.hypot(x - taps[0].x, y - taps[0].y) < 120 * DPR;
   if (taps.length >= 3 && near) { taps = []; pendingDouble = 0; debug = !debug; }
   else if (taps.length === 2 && near) pendingDouble = now + 0.33;   // wait to see if it's a triple
@@ -437,7 +462,10 @@ const up = e => {
   if (e && e.type === 'pointerup') newsPointerUp(); else newsPress = null;
   if (hold && hold.onMark && !hold.fired && touch && now - hold.t0 < 0.6 && Math.hypot(touch.x - hold.x, touch.y - hold.y) < HOLD_SLOP * DPR) {
     hold.fired = true; openGrokBot();                              // tap on the wordmark
+  } else if (hold && hold.onRps && !hold.fired && touch && now - hold.t0 < 0.6 && Math.hypot(touch.x - hold.x, touch.y - hold.y) < HOLD_SLOP * DPR) {
+    hold.fired = true; taps = []; pendingDouble = 0; rpsStart('tap');     // v1.12.1: tap the little clock / invite chip
   }
+  if (theme === 'pumpkin' && hold && !hold.onMark && !hold.onRps && !hold.onGauge && !hold.fired && touch && now - hold.t0 < 0.5 && Math.hypot(touch.x - hold.x, touch.y - hold.y) < HOLD_SLOP * DPR && inPumpkin(hold.x, hold.y)) pkc.tapAt = now + 0.36;   // v1.14
   hold = null;
   if (touch) lookOverride = { x: touch.x, y: touch.y, until: now + 1.6 }; touch = null;
 };
@@ -450,7 +478,12 @@ cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
 // a long-press on the wordmark toggles the wordmark. Outside the app there is no bridge,
 // so it just shrugs.
 const HOLD_SEC = 1.0, HOLD_SLOP = 28;
-let hold = null, markRect = null;
+let hold = null, markRect = null, miniRect = null;
+// v1.12.1: a tap on the little clock (or on the RPS invitation chip) starts rock-paper-scissors
+function inRpsTap(x, y) {
+  const inr = r => !!r && Math.abs(x - r.x) < r.hw && Math.abs(y - r.y) < r.hh;
+  return !rps.on && (inr(miniRect) || (rps.inviteRect && now < rps.inviteRect.until && inr(rps.inviteRect)));
+}
 function inMark(x, y) { return !!markRect && Math.abs(x - markRect.x) < markRect.hw && Math.abs(y - markRect.y) < markRect.hh; }
 function openGrokBot(delayMs) {
   let ok = false;
@@ -524,18 +557,63 @@ function usageAgeMs() {
 }
 const usagePct = () => usage ? clamp(usage.pct, 0, 999) : 0;
 const usageColor = p => p > 90 ? '#EE5257' : p > 75 ? '#F5A524' : '#3EC46D';
-function nervous() { return USAGE_ON && usage ? clamp((usagePct() - 70) / 30, 0, 1) : 0; }
-function inGauge(x, y) { return !!gaugeRect && Math.abs(x - gaugeRect.x) < gaugeRect.hw && Math.abs(y - gaugeRect.y) < gaugeRect.hh; }
-function usageApply(s) {                                           // personality: nervous as the plan burns down
-  const nv = nervous(); if (!nv || sleeping || move) return;
-  const p = usagePct();
-  if (p > 85 && !(SENSE.cam && SENSE.faces && SENSE.faces.length)) {   // shifty eyes (unless watching someone)
-    s.lx = Math.sin(now * 5.3) > 0.2 ? 0.55 : -0.55; s.L.h *= 0.96; s.R.h *= 0.96;
+// v1.12 pace forecast. The feed's projectedUsd = spend so far * cycle length / time elapsed, so the spend rate
+// is projectedUsd / cycle length; the limit is crossed at updatedAt + (limit - spent) / rate (capped at the reset).
+function usagePace() {
+  if (!usage || !num(usage.projectedUsd) || !num(usage.limitUsd) || usage.limitUsd <= 0) return null;
+  const cs = Date.parse(usage.cycleStart), ce = Date.parse(usage.cycleEnd), ref = Date.parse(usage.updatedAt);
+  const lim = usage.limitUsd, sp = usage.spentUsd, pr = usage.projectedUsd;
+  let hitAt = null;
+  if (pr > lim && isFinite(cs) && isFinite(ce) && ce > cs) {
+    const t0 = isFinite(ref) ? ref : Date.now(), rate = pr / (ce - cs);
+    hitAt = Math.min(ce, sp >= lim ? t0 : t0 + (lim - sp) / rate);
   }
-  s.L.rot += 0.12 * nv; s.R.rot -= 0.12 * nv;                        // worried tilt
-  if (usageVisible && gaugeRect && now > worryNext) {              // occasional worried glance at the gauge
-    if (worryNext) { lookOverride = { x: gaugeRect.x, y: gaugeRect.y, until: now + 1.3 }; s.noBlink = true; }
-    worryNext = now + rnd(18, 40) * (1.4 - nv);
+  return { ratio: pr / lim, over: pr > lim, at: sp >= lim, hitAt, proj: pr };
+}
+function hitLabel(pc) {                                            // 'hits limit ~Thu' (weekday within a week, else the date)
+  if (!pc || !pc.over) return '';
+  if (pc.at) return 'at limit';
+  if (pc.hitAt == null) return 'over pace';
+  const d = new Date(pc.hitAt), n = new Date(), day = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const dd = Math.round((day(d) - day(n)) / 864e5);
+  if (dd <= 0) return 'hits limit today';
+  return 'hits limit ~' + (dd < 7 ? d.toLocaleDateString('en-US', { weekday: 'short' }) : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+}
+// mood follows the PACE (not just % used): nervous when on track to overspend, relaxed when comfortably under
+function nervous() {
+  if (!USAGE_ON || !usage) return 0;
+  const p = usagePct(), pc = usagePace();
+  if (p >= 100) return 1;
+  if (!pc) return clamp((p - 70) / 30, 0, 1);
+  return pc.over ? clamp(0.35 + (pc.ratio - 1) / 0.25, 0.35, 1) : 0;
+}
+function relaxed() {
+  if (!USAGE_ON || !usage || usagePct() > 75) return 0;
+  const pc = usagePace(); return pc ? clamp((0.9 - pc.ratio) / 0.25, 0, 1) : 0;
+}
+function inGauge(x, y) { return false; }                           // v1.11: the gauge lives on its own canvas (#g)
+let wobbleNext = 0, wobbleAt = -9, calmGlanceUntil = 0, worryGlanceUntil = 0;
+function usageApply(s) {                                           // personality: subtle, never a sweat drop
+  if (sleeping || move || rps.on) return;
+  const nv = nervous(), rx = relaxed();
+  if (nv) {
+    s.L.rot += 0.07 * nv; s.R.rot -= 0.07 * nv;                    // slight worried brow tilt
+    if (!wobbleNext) wobbleNext = now + rnd(4, 9);
+    if (now > wobbleNext) { wobbleAt = now; wobbleNext = now + rnd(7, 14) * (1.25 - 0.35 * nv); }
+    if (now < worryGlanceUntil) { s.noBlink = true; s.L.h *= 1.06; s.R.h *= 1.06; }   // eyes stay open (a little wide) while glancing
+    const wt = now - wobbleAt;                                     // a small nervous tremble, ~0.7 s
+    if (wt < 0.7) { const k = Math.sin(wt / 0.7 * Math.PI) * nv; s.frot += 0.04 * Math.sin(wt * 40) * k; s.fx += 0.6 * Math.sin(wt * 33) * k; s.L.h *= 1 - 0.04 * k; s.R.h *= 1 - 0.04 * k; }
+    if (thermoOn && now > worryNext) {                             // occasional side-glance at the gauge (off to the right)
+      if (worryNext) { lookOverride = { x: W + TGW * 0.5, y: thermo.levelY || H / 2, until: now + 1.3 }; worryGlanceUntil = now + 1.3; }
+      worryNext = now + rnd(16, 34) * (1.35 - 0.45 * nv);
+    }
+  } else if (rx) {
+    if (thermoOn && now > worryNext) {                             // now and then a content little look at the gauge
+      if (worryNext) { lookOverride = { x: W + TGW * 0.5, y: thermo.levelY || H / 2, until: now + 1.1 }; calmGlanceUntil = now + 1.1; }
+      worryNext = now + rnd(45, 90);
+    }
+    if (now < calmGlanceUntil) { const k = bump(1.1 - (calmGlanceUntil - now), 0.15, 0.35, 0.85, 1.1) * rx; s.L.happy = Math.max(s.L.happy, 0.8 * k); s.R.happy = Math.max(s.R.happy, 0.8 * k); s.noBlink = true; }
+    s.L.lid = Math.max(s.L.lid, 0.08 * rx); s.R.lid = Math.max(s.R.lid, 0.08 * rx);   // soft, relaxed lids
   }
 }
 function drawUsage(L) {
@@ -568,6 +646,499 @@ function drawUsage(L) {
   ctx.restore();
   gaugeRect = { x: x + r * 3, y, hw: Math.max(r * 5, 60 * DPR), hh: Math.max(r * 1.6, 36 * DPR) };
 }
+
+// ---------- v1.11: thermostat-style burndown gauge, docked right, full height ----------
+// Remaining quota drains downward (full at cycle start). Own canvas, repainted only when something
+// visible changes (value easing, 1-2 px anti-burn-in drift, brightness), so it costs ~nothing per frame.
+// Low-burn: thin outlines, dim at rest, dimmer when nobody is around / asleep, brief brighten on change or tap.
+const FONT_T = 'system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
+function mixHex(a, b, t) {
+  const x = parseInt(a.slice(1), 16), y = parseInt(b.slice(1), 16), m = (s) => Math.round(((x >> s) & 255) + (((y >> s) & 255) - ((x >> s) & 255)) * t);
+  return `rgb(${m(16)},${m(8)},${m(0)})`;
+}
+function thermoColor(p) {                                          // same bands as before; above 90% slides amber -> red
+  if (p <= 75) return '#3EC46D';
+  if (p <= 90) return '#F5A524';
+  return mixHex('#F5A524', '#EE5257', clamp((p - 90) / 10, 0, 1));
+}
+function thermoSetup() {                                           // gauge shows whenever a feed is configured
+  const want = USAGE_ON;
+  if (want !== thermoOn) { thermoOn = want; resize(); }
+}
+function fitFont(c, text, weight, px, maxW) { c.font = `${weight} ${px}px ${FONT_T}`; const w = c.measureText(text).width; if (w > maxW) { px *= maxW / w; c.font = `${weight} ${px}px ${FONT_T}`; } return px; }
+function thermoLiquid(p) {                                         // cool teal when plenty left -> amber -> hot red near empty
+  if (p <= 60) return mixHex('#22D3EE', '#2DD4BF', p / 60);
+  if (p <= 85) return mixHex('#2DD4BF', '#F5A524', (p - 60) / 25);
+  return mixHex('#F5A524', '#EE5257', clamp((p - 85) / 13, 0, 1));
+}
+function rgbA(rgb, a) { return rgb.replace('rgb(', 'rgba(').replace(')', ',' + a + ')'); }
+let hitKeyMin = -1, hitKeyStr = '';
+function thermoHitKey() { const m = Math.floor(Date.now() / 60000); if (m !== hitKeyMin) { hitKeyMin = m; hitKeyStr = hitLabel(usagePace()); } return hitKeyStr; }
+function drawThermo(dt) {
+  if (!thermoOn || TGW < 8) return;
+  const has = !!usage, target = has ? usagePct() : 0;
+  if (thermo.shown < 0) thermo.shown = target;
+  thermo.shown += (target - thermo.shown) * (1 - Math.exp(-dt / 0.9));          // smooth ~2 s glide on updates
+  if (Math.abs(target - thermo.shown) < 0.01) thermo.shown = target;
+  if (has && thermo.lastPct !== null && Math.abs(target - thermo.lastPct) > 0.05) thermo.flash = now;
+  if (has) thermo.lastPct = target;
+  const idle = sleeping || (SENSE.cam && pres.state === 'empty' && now - pres.emptySince > 120);
+  const aT = (idle ? 0.45 : 0.82) + 0.18 * clamp(1 - (now - thermo.flash - 4) / 4, 0, 1);
+  thermo.a += (aT - thermo.a) * (1 - Math.exp(-dt / 0.6));
+  const fps = idle ? 2 : 12, tick = Math.floor(now * fps);                       // liquid motion repaints at low fps only
+  const t = now / 60, dx = 1.5 * DPR * Math.sin(t * 0.37 + ph[0]), dy = 2 * DPR * Math.sin(t * 0.23 + ph[1]);   // 1-2 px slow drift
+  const stale = has && usageAgeMs() > 3600 * 1000;
+  const key = [tick, thermo.shown.toFixed(2), (thermo.a * (1 - advDim)).toFixed(3), has ? usage.spentUsd + '/' + usage.limitUsd + '/' + usage.daysLeft + '/' + usage.projectedUsd + '/' + thermoHitKey() : '-', stale, TGW, TGH].join('|');
+  if (key === thermo.key) return;
+  thermo.key = key;
+  const c = gctx, w = TGW, h = TGH, p = thermo.shown, liq = thermoLiquid(p), T = tick / fps;
+  const dim = 1 - 0.6 * advDim, A = thermo.a * dim;
+  c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1; c.fillStyle = '#000'; c.fillRect(0, 0, w, h);
+  c.translate(dx, dy); c.textAlign = 'center'; c.textBaseline = 'middle';
+  const maxW = w * 0.9, left = has ? usage.limitUsd - usage.spentUsd : 0;
+  // ---- readout: big $ left, % used, then $ used / limit and days left ----
+  c.globalAlpha = A; c.fillStyle = '#fff';
+  const big = has ? (left >= 0 ? `$${Math.round(left)}` : `-$${Math.round(-left)}`) : '--';
+  fitFont(c, big, 800, w * 0.34, maxW); c.fillText(big, w / 2, h * 0.052);
+  c.fillStyle = 'rgba(255,255,255,0.6)'; fitFont(c, left >= 0 ? 'left' : 'over', 600, w * 0.11, maxW); c.fillText(left >= 0 ? 'left' : 'over', w / 2, h * 0.093);
+  c.fillStyle = has ? liq : '#666'; const pl = has ? Math.round(p) + '% used' : 'no data';
+  fitFont(c, pl, 700, w * 0.15, maxW); c.fillText(pl, w / 2, h * 0.128);
+  if (has) {
+    c.fillStyle = 'rgba(255,255,255,0.5)'; const l2 = `$${Math.round(usage.spentUsd)} / $${Math.round(usage.limitUsd)}`;
+    fitFont(c, l2, 500, w * 0.105, maxW); c.fillText(l2, w / 2, h * 0.158);
+    if (num(usage.daysLeft)) { const l3 = `${Math.max(0, Math.round(usage.daysLeft))}d left`; fitFont(c, l3, 500, w * 0.105, maxW); c.fillText(l3, w / 2, h * 0.183); }
+  }
+  // ---- glass geometry: ONE continuous outline, tube flares through a curved neck into the bulb ----
+  const cx = w * 0.56, tr = w * 0.17, br = tr * 1.6, top = h * 0.225, bulbY = h * 0.85;
+  const TH = 0.92;                                                  // where the neck meets the bulb (rad from top)
+  const bulbPath = (r0, b0) => {                                    // r0 = tube half-width, b0 = bulb radius
+    const sx = Math.sin(TH), cy = Math.cos(TH), px = b0 * sx, py = bulbY - b0 * cy, ny = py - r0 * 1.1, k = r0 * 0.6, k2 = b0 * 0.35;
+    c.beginPath(); c.moveTo(cx - r0, top); c.arc(cx, top, r0, Math.PI, 0);
+    c.lineTo(cx + r0, ny);
+    c.bezierCurveTo(cx + r0, ny + k, cx + px - cy * k2, py - sx * k2, cx + px, py);
+    c.arc(cx, bulbY, b0, -Math.PI / 2 + TH, Math.PI * 1.5 - TH);
+    c.bezierCurveTo(cx - px + cy * k2, py - sx * k2, cx - r0, ny + k, cx - r0, ny);
+    c.closePath();
+    return ny;
+  };
+  const inset = Math.max(2, w * 0.03);
+  const neckY = bulbY - br * Math.cos(TH) - tr * 1.1, bot = neckY;  // "0" = top of the neck; the bulb is the reserve
+  const len = bot - top, rem = clamp(1 - p / 100, 0, 1), level = bot - rem * len;
+  thermo.levelY = level;
+  // soft glow centred on the bulb (gentle 4 s breathing above 90%), kept inside the strip so it never hard-clips
+  const pulse = p > 90 ? 0.5 + 0.5 * Math.sin(T * Math.PI / 2) : 0.5;
+  const glowA = (p > 90 ? 0.22 + 0.3 * pulse : 0.24) * A, gr = Math.min(br * 2.2, (w - cx) * 0.98, cx * 0.98);
+  if (has && p < 100) {
+    const g = c.createRadialGradient(cx, bulbY, 0, cx, bulbY, gr);
+    g.addColorStop(0, rgbA(liq, glowA)); g.addColorStop(0.45, rgbA(liq, glowA * 0.55)); g.addColorStop(0.75, rgbA(liq, glowA * 0.18)); g.addColorStop(1, rgbA(liq, 0));
+    c.globalAlpha = 1; c.fillStyle = g; c.beginPath(); c.arc(cx, bulbY, gr, 0, Math.PI * 2); c.fill();
+  }
+  // glass body: dark interior, lighter edges (inner shadow)
+  c.globalAlpha = A; bulbPath(tr, br);
+  const ig = c.createLinearGradient(cx - br, 0, cx + br, 0); ig.addColorStop(0, 'rgba(255,255,255,0.10)'); ig.addColorStop(0.35, 'rgba(255,255,255,0.02)'); ig.addColorStop(0.7, 'rgba(255,255,255,0.03)'); ig.addColorStop(1, 'rgba(255,255,255,0.12)');
+  c.fillStyle = ig; c.fill();
+  // liquid: ONE body clipped to the inner glass path, one vertical gradient, wave only on the top surface
+  c.save(); bulbPath(tr - inset, br - inset); c.clip();
+  if (p < 100) {
+    const lg = c.createLinearGradient(0, level, 0, bulbY + br);
+    lg.addColorStop(0, rgbA(liq, 0.95)); lg.addColorStop(0.5, rgbA(liq, 0.85)); lg.addColorStop(1, rgbA(liq, 0.62));
+    c.fillStyle = lg; c.beginPath();
+    const amp = level > top ? Math.min(w * 0.016, (bot - level) * 0.5 + w * 0.006) : 0, x0 = cx - br, x1 = cx + br;
+    c.moveTo(x0, bulbY + br + 2);
+    for (let i = 0; i <= 16; i++) { const x = x0 + (x1 - x0) * i / 16; c.lineTo(x, level + amp * Math.sin(i * 1.2 + T * 1.3)); }
+    c.lineTo(x1, bulbY + br + 2); c.closePath(); c.fill();
+    if (!idle) {                                                    // bubbles start in the bulb and rise through the neck
+      c.strokeStyle = 'rgba(255,255,255,0.35)'; c.lineWidth = Math.max(1, DPR);
+      const y0 = bulbY + br * 0.45, y1 = level + w * 0.04;
+      for (let i = 0; i < 5; i++) {
+        const per = 8 + i * 3.1, f = ((T + i * 4.7) % per) / per, by = y0 - f * (y0 - y1);
+        if (by < y1) continue;
+        const room = by > neckY ? (br - inset) * 0.5 * (1 - f * 0.3) : (tr - inset) * 0.55;   // wider wander in the bulb
+        const bx = cx + room * Math.sin(i * 2.1 + f * 5 + T * 0.4), rr = w * (0.013 + 0.006 * (i % 2));
+        c.beginPath(); c.arc(bx, by, rr, 0, Math.PI * 2); c.stroke();
+      }
+    }
+  }
+  // one shared highlight stripe: down the tube, through the neck, around the bulb's left curve
+  {
+    const hx = cx - tr * 0.55, hb = br * 0.7, a1 = Math.PI * 1.5 - TH * 0.95, a2 = Math.PI * 1.02;
+    const ex = cx + hb * Math.cos(a1), ey = bulbY + hb * Math.sin(a1);
+    const hg = c.createLinearGradient(0, top, 0, bulbY + br * 0.3);
+    hg.addColorStop(0, 'rgba(255,255,255,0.05)'); hg.addColorStop(0.2, 'rgba(255,255,255,0.2)'); hg.addColorStop(0.85, 'rgba(255,255,255,0.18)'); hg.addColorStop(1, 'rgba(255,255,255,0)');
+    c.strokeStyle = hg; c.lineWidth = tr * 0.2; c.lineCap = 'round';
+    c.beginPath(); c.moveTo(hx, top - tr * 0.2); c.lineTo(hx, neckY);
+    c.bezierCurveTo(hx, neckY + tr * 0.7, ex + tr * 0.25, ey - tr * 0.5, ex, ey);
+    c.arc(cx, bulbY, hb, a1, a2, true);
+    c.stroke(); c.lineCap = 'butt';
+  }
+  c.restore();
+  // glass outline (same single path)
+  c.globalAlpha = A; c.strokeStyle = p >= 100 ? '#EE5257' : 'rgba(255,255,255,0.5)'; c.lineWidth = Math.max(1.5, 1.6 * DPR); bulbPath(tr, br); c.stroke();
+  // segmented ticks (every 10%), labelled full / half / empty
+  const tx1 = cx - tr - w * 0.035;
+  for (let i = 0; i <= 10; i++) {
+    const y = bot - (i / 10) * len, major = i % 5 === 0, L = major ? w * 0.11 : w * 0.06;
+    c.fillStyle = major ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.3)';
+    c.fillRect(tx1 - L, y - (major ? 1.5 : 1) * DPR / 2, L, (major ? 1.5 : 1) * DPR);
+  }
+  c.fillStyle = 'rgba(255,255,255,0.55)'; c.textAlign = 'right';
+  const lx = tx1 - w * 0.13;
+  fitFont(c, 'full', 600, w * 0.085, w * 0.2); c.fillText('full', lx, top);
+  c.fillText('½', lx, bot - len / 2); c.fillText('0', lx, bot);
+  // pace ghost: where the level would be today if spend were even across the cycle (from cycle dates)
+  const cs = has && Date.parse(usage.cycleStart), ce = has && Date.parse(usage.cycleEnd);
+  if (isFinite(cs) && isFinite(ce) && ce > cs) {
+    const f = clamp((Date.now() - cs) / (ce - cs), 0, 1), py = bot - (1 - f) * len, k = w * 0.055, px = cx + tr + w * 0.03;
+    c.setLineDash([3 * DPR, 3 * DPR]); c.strokeStyle = 'rgba(255,255,255,0.55)'; c.lineWidth = Math.max(1, DPR);
+    c.beginPath(); c.moveTo(cx - tr, py); c.lineTo(cx + tr, py); c.stroke(); c.setLineDash([]);
+    c.beginPath(); c.moveTo(px, py); c.lineTo(px + k * 1.4, py - k * 0.8); c.lineTo(px + k * 1.4, py + k * 0.8); c.closePath(); c.stroke();
+    c.save(); c.translate(px + k * 0.9, py - k * 1.9); c.rotate(-Math.PI / 2); c.textAlign = 'left'; c.fillStyle = 'rgba(255,255,255,0.5)'; fitFont(c, 'pace', 600, w * 0.07, w); c.fillText('pace', 0, 0); c.restore();
+  }
+  // projected end of cycle: a thin notch on the tick scale (red at "0" when it beats the limit) + text line at the bottom
+  c.textAlign = 'center';
+  if (has && num(usage.projectedUsd)) {
+    const pr = usage.projectedUsd, pc = usagePace(), over = pc.over;
+    const yy = over ? bot : bot - (1 - pr / usage.limitUsd) * len;
+    c.fillStyle = over ? '#EE5257' : 'rgba(255,255,255,0.75)';
+    c.beginPath(); c.moveTo(tx1 + w * 0.012, yy); c.lineTo(tx1 - w * 0.05, yy - w * 0.035); c.lineTo(tx1 - w * 0.05, yy + w * 0.035); c.closePath(); c.fill();
+    // v1.12: projected end-of-cycle figure, then ONE status line: red 'hits limit ~Thu' when the pace beats the limit, else 'on pace'
+    c.fillStyle = 'rgba(255,255,255,0.75)'; const l4 = `proj $${Math.round(pr)}`; fitFont(c, l4, 700, w * 0.11, maxW); c.fillText(l4, w / 2, h * 0.946);
+    const l5 = over ? hitLabel(pc) : 'on pace';
+    c.fillStyle = over ? '#EE5257' : 'rgba(255,255,255,0.5)'; fitFont(c, l5, over ? 700 : 500, w * 0.095, maxW); c.fillText(l5, w / 2, h * 0.972);
+    c.fillStyle = 'rgba(255,255,255,0.6)';
+  }
+  if (stale) { const hh = Math.round(usageAgeMs() / 3600000); c.fillStyle = '#F5A524'; const l6 = isFinite(hh) ? `stale ${hh}h` : 'stale'; fitFont(c, l6, 700, w * 0.1, maxW); c.fillText(l6, w / 2, h * 0.99); }
+  thermo.rect = { x: (innerWidth - gwCss), w: gwCss, level: level / DPR, pct: +p.toFixed(2) };
+}
+thermoSetup();
+gv.addEventListener('pointerdown', e => {                          // tap the gauge: brighten + refresh the feed
+  e.preventDefault(); lastInput = now; thermo.flash = now; if (sleeping) wakeUp(); fetchUsage(false);
+});
+// ---------- v1.12: ROCK-PAPER-SCISSORS with hand gestures ----------
+// Player's throw comes from the bundled, on-device MediaPipe Gesture Recognizer (Closed_Fist / Open_Palm / Victory),
+// with a finger-count fallback from the same hand landmarks. The bot's throw is drawn from crypto.getRandomValues
+// at the start of each round, before any hand frame of that round is read. Nothing leaves the device.
+// Triggers: hold up a fist ~0.7 s while someone is at the desk, tap the little clock (or the invitation chip),
+// an occasional invitation, or adb `--es look rps` / ?rps=1.  adb `--es look rpsfist` replays a synthetic fist (test).
+// Hands run every frame while a game or a fist hold is on; otherwise ~5 fps while a face was seen in the last 8 s.
+// v1.12.1: v1.12 only accepted frames the canned model labelled Closed_Fist > 0.6 *and* a visible face; a fist held up
+// knuckles-forward mostly comes back as 'None' with every finger curled, and it hides the face, so it never fired.
+// v1.12.2: v1.12.1 over-corrected and started games on its own (stray curled hands, 8 s cooldown). Now: a face within
+// 2 s, a real-sized hand box away from the edges, 1.0 s with >= 5 fist frames and >= 70% fist; 'None'+curled only for a
+// big, confident hand. After a game: fist rematch only for 20 s, then 2 min off; a game with no throw read -> 10 min off.
+const RPS = { triggerHoldSec: 1.0, triggerScore: 0.55, triggerMinFrames: 5, triggerRatio: 0.7, triggerGapSec: 0.35, faceSec: 2.0,
+  minBox: 0.10, noneMinBox: 0.16, noneMinScore: 0.7, noneMinConf: 0.85, presentSec: 8,
+  rematchSec: 20, cooldownSec: 120, idleCooldownSec: 600, inviteEvery: [1500, 2700], inviteSec: 9,
+  introSec: 1.9, beatSec: 0.62, readSec: 1.0, revealSec: 2.7, missSec: 2.4, finalSec: 3.6, toWin: 2, maxRounds: 6, maxMisses: 2 };
+const RPS_THROWS = ['rock', 'paper', 'scissors'];
+const RPS_BEATS = { rock: 'scissors', paper: 'rock', scissors: 'paper' };
+const rps = { on: false, phase: '', t0: 0, round: 0, me: 0, you: 0, misses: 0, bot: '', player: '', result: '', votes: { rock: 0, paper: 0, scissors: 0 },
+  lastSeq: 0, reads: 0, rematchUntil: 0, fistSince: 0, fistLast: 0, fistN: 0, fistMiss: 0, fistSeq: -1, faceAt: -9, sim: null, coolUntil: 0, inviteNext: 0, invite: -1e9, mock: Q.get('rpsMock') || null, forceBot: null, why: '', hist: [] };
+function rpsRandomThrow() {
+  if (rps.forceBot && RPS_THROWS.includes(rps.forceBot)) return rps.forceBot;            // test hook only
+  try { const a = new Uint32Array(1); for (;;) { crypto.getRandomValues(a); if (a[0] < 4294967295 - (4294967295 % 3)) return RPS_THROWS[a[0] % 3]; } }
+  catch (e) { return RPS_THROWS[Math.floor(Math.random() * 3)]; }
+}
+// gesture label (+ finger bits: index=1, middle=2, ring=4, pinky=8) -> throw or null
+function rpsClassify(gesture, score, mask) {
+  if (score > 0.5) { if (gesture === 'Closed_Fist') return 'rock'; if (gesture === 'Open_Palm') return 'paper'; if (gesture === 'Victory') return 'scissors'; }
+  if (gesture === 'Thumb_Up' || gesture === 'Thumb_Down' || gesture === 'ILoveYou' || gesture === 'Pointing_Up') return null;   // v1.12.2
+  mask = mask | 0; const n = (mask & 1) + (mask >> 1 & 1) + (mask >> 2 & 1) + (mask >> 3 & 1);
+  if ((mask & 3) === 3 && !(mask & 12)) return 'scissors';
+  if (n >= 4) return 'paper';
+  if (n === 0) return 'rock';
+  return null;
+}
+// v1.12.2 trigger frame test. b = hand box in frame units {bw,bh,bcx,bcy,conf}; missing box (old callers) -> reject.
+function rpsFistish(gesture, score, mask, b) {
+  if (!b) return false;
+  const size = Math.max(b.bw || 0, b.bh || 0);
+  if (size < RPS.minBox || b.bcx < 0.1 || b.bcx > 0.9 || b.bcy < 0.08 || b.bcy > 0.85) return false;   // edge slivers / tiny hands
+  if (gesture === 'Closed_Fist') return score >= RPS.triggerScore;
+  if (gesture && gesture !== 'None') return false;                   // thumbs, pointing, palm, victory, ILoveYou: not a fist
+  return (mask | 0) === 0 && score >= RPS.noneMinScore && (b.conf || 0) >= RPS.noneMinConf && size >= RPS.noneMinBox;
+}
+function rpsFistAllowed() { return now < rps.rematchUntil || now >= rps.coolUntil; }
+function rpsFistReset(why) {
+  if (rps.fistSince && APP) console.info('perf rps fist-hold ' + JSON.stringify({ n: rps.fistN, miss: rps.fistMiss, nohand: rps.fistNone || 0, dur: +(now - rps.fistSince).toFixed(2), end: why || '' }));
+  rps.fistSince = 0; rps.fistN = rps.fistMiss = rps.fistNone = 0;
+}
+// one hand sample per camera result; the synthetic one (test hook) replays a held fist at 10 fps (the boosted hold rate) through the same logic
+function rpsHandSample() {
+  const m = rps.sim;
+  if (m && now < m.until) {
+    if (now >= m.next) { m.next = now + 0.1; m.seq++; }
+    const drop = m.dropEvery && m.seq % m.dropEvery === 0;
+    return { seq: 'sim' + m.seq, hand: !drop, gesture: m.gesture, score: m.score, mask: m.mask, box: { bw: m.box, bh: m.box, bcx: 0.5, bcy: 0.5, conf: m.conf }, sim: true };
+  }
+  if (m) rps.sim = null;
+  return { seq: SENSE.handSeq || 0, hand: !!SENSE.hand, gesture: SENSE.gesture, score: SENSE.gestureScore, mask: SENSE.fingerMask, box: SENSE.hand, sim: false };
+}
+function rpsCanStart() { return !rps.on && !sleeping && !trans && !bk.on && !advShow && !card.open && !(hold && !hold.fired) && !touch; }
+function rpsStart(why) {
+  if (rps.on) return false;
+  if (adv) advCancel(); if (card.open) closeCard(); if (trans) { trans = null; enter = 1; swipeX = swipeSq = swipeRot = 0; }
+  sleeping = false; move = null; lookOverride = null;
+  Object.assign(rps, { on: true, phase: 'intro', t0: now, round: 0, me: 0, you: 0, misses: 0, bot: '', player: '', result: '', why: why || 'debug', fistSince: 0, fistN: 0, fistMiss: 0, reads: 0, rematchUntil: 0, invite: -1e9 });
+  if (APP) console.info('perf rps start ' + (why || 'debug'));
+  lastInput = now; return true;
+}
+function rpsEnd(why) {
+  if (!rps.on) return;
+  rps.on = false; rps.phase = '';
+  // nobody actually played (no throw read, or swiped away): long rest, no rematch; otherwise a short fist-rematch window
+  const idle = rps.reads === 0 && why !== 'debug';
+  rps.coolUntil = now + (idle ? RPS.idleCooldownSec : RPS.cooldownSec);
+  rps.rematchUntil = !idle && why === 'done' ? now + RPS.rematchSec : 0;
+  if (APP) console.info('perf rps end ' + JSON.stringify({ why, reads: rps.reads, me: rps.me, you: rps.you, start: rps.why, cool: idle ? RPS.idleCooldownSec : RPS.cooldownSec, rematch: rps.rematchUntil ? RPS.rematchSec : 0 }));
+  rps.inviteNext = now + rnd(...RPS.inviteEvery);
+  SENSE.handsBoost = false; move = null; nextMoveAt = now + rnd(3, 6); scheduleTheme();
+  if (why !== 'swipe') play('hello');
+}
+function rpsRound() {
+  rps.round++; rps.bot = rpsRandomThrow(); rps.player = ''; rps.result = '';
+  rps.votes.rock = rps.votes.paper = rps.votes.scissors = 0; rps.lastSeq = SENSE.handSeq || 0;
+  rps.phase = 'count'; rps.t0 = now;
+}
+function rpsPhaseT() { return now - rps.t0; }
+const rpsShootAt = () => RPS.beatSec * 3;
+function rpsTick() {                                                   // every frame (awake or asleep)
+  SENSE.handsBoost = rps.on || !!rps.fistSince;
+  if ((SENSE.faces || []).length) rps.faceAt = now;
+  if (!rps.on) { rpsWatch(); return; }
+  const t = rpsPhaseT();
+  if (rps.phase === 'intro') { if (t > RPS.introSec) rpsRound(); return; }
+  if (rps.phase === 'count') {
+    const sh = rpsShootAt();
+    // read the throw around "shoot!": new hand results only, later frames weigh more
+    if (t > sh - 0.15 && SENSE.handSeq !== rps.lastSeq) {
+      rps.lastSeq = SENSE.handSeq;
+      // v1.12.2: only read a throw while someone is actually facing the tablet (a parked hand with no face doesn't play)
+      if (SENSE.hand && (now - rps.faceAt < RPS.faceSec || !SENSE.cam)) { const k = rpsClassify(SENSE.gesture, SENSE.gestureScore, SENSE.fingerMask); if (k) rps.votes[k] += 1 + clamp(t - sh, 0, 1); }
+    }
+    if (t > sh + RPS.readSec) {
+      let best = null, bv = 0; for (const k of RPS_THROWS) if (rps.votes[k] > bv) { bv = rps.votes[k]; best = k; }
+      if (rps.mock) best = RPS_THROWS.includes(rps.mock) ? rps.mock : null;               // test hook: pretend this was seen
+      rps.player = best || '';
+      if (!best) { rps.misses++; rps.round--; rps.phase = 'miss'; rps.t0 = now; return; }
+      rps.misses = 0; rps.reads++;
+      rps.result = best === rps.bot ? 'tie' : RPS_BEATS[rps.bot] === best ? 'bot' : 'you';
+      if (rps.result === 'bot') rps.me++; else if (rps.result === 'you') rps.you++;
+      rps.hist.push({ bot: rps.bot, player: best, result: rps.result }); if (rps.hist.length > 50) rps.hist.shift();
+      rps.phase = 'reveal'; rps.t0 = now;
+    }
+    return;
+  }
+  if (rps.phase === 'reveal' || rps.phase === 'miss') {
+    if (t < (rps.phase === 'miss' ? RPS.missSec : RPS.revealSec)) return;
+    const done = rps.me >= RPS.toWin || rps.you >= RPS.toWin || rps.round >= RPS.maxRounds || rps.misses >= RPS.maxMisses;
+    if (done) { rps.phase = 'final'; rps.t0 = now; } else rpsRound();
+    return;
+  }
+  if (rps.phase === 'final' && t > RPS.finalSec) rpsEnd('done');
+}
+function rpsWatch() {                                                 // fist held ~0.7 s while someone is here -> game on
+  if ((SENSE.faces || []).length) rps.faceAt = now;
+  const faceNow = now - rps.faceAt < RPS.faceSec;                    // v1.12.2: someone actually looking, not just "was here"
+  const smp = rpsHandSample();
+  if ((!smp.sim && (!SENSE.ready || !SENSE.cam || !faceNow)) || !rpsFistAllowed() || !rpsCanStart()) { if (rps.fistSince) rpsFistReset('blocked'); }
+  else {
+    if (smp.seq !== rps.fistSeq) {                                     // a new hand result (or a run that found no hand)
+      rps.fistSeq = smp.seq;
+      if (smp.hand && rpsFistish(smp.gesture, smp.score, smp.mask, smp.box)) {
+        if (!rps.fistSince) { rps.fistSince = now; rps.fistN = rps.fistMiss = rps.fistNone = 0; }
+        rps.fistN++; rps.fistLast = now;
+      } else if (rps.fistSince) { if (smp.hand) rps.fistMiss++; else rps.fistNone++; }   // no-hand runs: tolerated up to the gap
+    }
+    if (rps.fistSince && now - rps.fistLast > RPS.triggerGapSec) rpsFistReset('lost');
+    else if (rps.fistSince && now - rps.fistSince >= RPS.triggerHoldSec && rps.fistN >= RPS.triggerMinFrames && rps.fistN / (rps.fistN + rps.fistMiss) >= RPS.triggerRatio) {
+      if (APP) console.info('perf rps fist-ok ' + JSON.stringify({ g: smp.gesture, s: +(smp.score || 0).toFixed(2), box: smp.box ? +Math.max(smp.box.bw || 0, smp.box.bh || 0).toFixed(2) : 0, conf: smp.box ? +(smp.box.conf || 0).toFixed(2) : 0, face: +(now - rps.faceAt).toFixed(1) }));
+      rpsFistReset('start'); rpsStart(smp.sim ? 'fist-sim' : 'fist');
+      if (rps.on) rps.why = 'fist';
+      return;
+    }
+  }
+  // occasional invitation while someone is at the desk (daytime only)
+  if (!rps.inviteNext) rps.inviteNext = now + rnd(...RPS.inviteEvery);
+  if (now > rps.inviteNext && now - rps.invite > RPS.inviteSec) {
+    rps.inviteNext = now + rnd(...RPS.inviteEvery);
+    if (pres.state === 'present' && (SENSE.faces || []).length && !quietHours() && !gameLook(theme)) rps.invite = now;
+  }
+}
+function rpsApply(s) {                                                 // face during the game (after every other modifier)
+  if (!rps.on) {
+    if (rps.fistSince) { const e = ease((now - rps.fistSince) / RPS.triggerHoldSec);   // anticipation: eyes widen at your fist
+      s.L.w *= 1 + 0.12 * e; s.R.w *= 1 + 0.12 * e; s.L.h *= 1 + 0.2 * e; s.R.h *= 1 + 0.2 * e; s.fs *= 1 + 0.04 * e; s.noBlink = true; }
+    return;
+  }
+  const t = rpsPhaseT(); s.k = Math.max(s.k, 18);
+  if (rps.phase === 'intro') { M.greet.apply(s, Math.min(t, 2.7)); return; }
+  if (rps.phase === 'count') {
+    const sh = rpsShootAt();
+    if (t < sh) {                                                      // bouncy beat on rock / paper / scissors
+      const u = (t % RPS.beatSec) / RPS.beatSec, up = Math.sin(u * Math.PI);
+      s.fy -= 6 * up; const sq = Math.max(0, Math.cos(u * Math.PI * 2)) * (u > 0.75 ? 1 : 0);
+      s.L.h = s.R.h = 1.06 - 0.16 * sq; s.L.w = s.R.w = 1 + 0.12 * sq; s.bsq = 0.05 * sq - 0.03 * up;
+      s.lx = 0.15 + 0.2 * up; s.ly = -0.1; s.L.lid = s.R.lid = 0; s.L.happy = s.R.happy = 0; s.noBlink = true; s.k = 26;
+    } else {                                                           // shoot! wide eyes on the player's hand
+      const e = ease((t - sh) / 0.12);
+      s.L.w = s.R.w = 1 + 0.18 * e; s.L.h = s.R.h = 1 + 0.3 * e; s.fs = 1 + 0.06 * e; s.lx = 0; s.ly = 0.15; s.L.happy = s.R.happy = 0; s.noBlink = true; s.k = 30;
+    }
+    return;
+  }
+  if (rps.phase === 'reveal') {
+    if (rps.result === 'bot') { M.happy.apply(s, Math.min(t, 2.1)); s.frot += 0.12 * Math.sin(t * 13) * (1 - ease((t - 1.8) / 0.6)); s.lx = -0.2; }   // gloat
+    else if (rps.result === 'you') { M.sigh.apply(s, Math.min(t, 2.35)); s.lx = -0.35; }          // sulk
+    else M.shrug.apply(s, Math.min(t, 1.65));                                                      // tie: shrug
+    return;
+  }
+  if (rps.phase === 'miss') {                                          // where did it go? search, then a curious tilt
+    const b = bump(t, 0, 0.2, 2.0, 2.4); s.lx = Math.sin(t * 4.2) * 0.9 * b; s.ly = 0.35 * b; s.frot += 0.12 * b; s.L.h *= 1 + 0.08 * b; (s.R).h *= 1 + 0.16 * b; s.noBlink = true;
+    return;
+  }
+  if (rps.phase === 'final') {
+    if (rps.me > rps.you) M.dance.apply(s, Math.min(t, 3.1)); else if (rps.you > rps.me) { if (t < 2.3) M.sigh.apply(s, t); else M.hello.apply(s, Math.min(t - 2.3, 0.99), {}); } else M.shrug.apply(s, Math.min(t, 1.65));
+  }
+}
+function rpsLayout() {
+  const d = drift(now * 0.5), S = Math.min(0.78, (W * 0.19) / ((SEP + EW) * U * 1.4));
+  return { theme: 'rps', x: W * 0.3 + d.x * 0.04 + cur.fx * U, y: H * 0.54 + d.y * 0.04 + cur.fy * U, S, rot0: 0, col: '#fff', bg: '#000', blob: null, hx: W * 0.71, hy: H * 0.54, hr: Math.min(H * 0.16, W * 0.12) };
+}
+// a hand drawn in the same white pill language as the eyes. kind: rock | paper | scissors
+function rpsPill(x, y, w, h, rot) { ctx.save(); ctx.translate(x, y); ctx.rotate(rot || 0); pill(w, h); ctx.restore(); }
+// Rendered at full opacity into a small offscreen canvas (seams cut with destination-out), then blitted with alpha,
+// so a faded hand never shows its overlapping parts.
+const rpsHandCv = document.createElement('canvas'), rpsHandCtx = rpsHandCv.getContext('2d');
+function drawRpsHand(kind, x, y, R, rot, sc, col, alpha) {
+  const pad = Math.ceil(R * 2.2), size = pad * 2;
+  if (rpsHandCv.width !== size) { rpsHandCv.width = size; rpsHandCv.height = size; } else rpsHandCtx.clearRect(0, 0, size, size);
+  const g = rpsHandCtx, main = ctx;
+  ctx = g;                                                          // reuse pill() on the offscreen context
+  try {
+    g.save(); g.translate(pad, pad); g.fillStyle = col || '#fff'; g.strokeStyle = col || '#fff';
+    const gap = Math.max(2, R * 0.075);
+    const cut = (fn) => { g.save(); g.globalCompositeOperation = 'destination-out'; g.fillStyle = '#000'; fn(); g.restore(); };
+    const fw = R * 0.36, palmW = R * 1.5, palmH = R * 1.25, py = R * 0.2;
+    const fx = i => -palmW / 2 + fw * 0.62 + i * (palmW - fw * 1.24) / 3;    // 4 finger columns across the palm
+    if (kind === 'paper') {
+      for (let i = 0; i < 4; i++) { const h = R * (i === 1 ? 1.45 : i === 3 ? 1.05 : 1.32); rpsPill(fx(i) + (i - 1.5) * R * 0.04, py - palmH / 2 - h * 0.32, fw, h, (i - 1.5) * 0.09); }
+    } else if (kind === 'scissors') {
+      rpsPill(fx(0) - R * 0.12, py - palmH / 2 - R * 0.62, fw, R * 1.5, -0.3);
+      rpsPill(fx(1) + R * 0.12, py - palmH / 2 - R * 0.62, fw, R * 1.5, 0.3);
+    }
+    g.beginPath(); if (g.roundRect) g.roundRect(-palmW / 2, py - palmH / 2, palmW, palmH, R * 0.46); else g.rect(-palmW / 2, py - palmH / 2, palmW, palmH); g.fill();
+    const curled = kind === 'rock' ? [0, 1, 2, 3] : kind === 'scissors' ? [2, 3] : [];
+    for (const i of curled) {                                       // knuckle pills across the top of the palm
+      cut(() => rpsPill(fx(i), py - palmH / 2 + R * 0.18, fw * 0.98 + gap * 2, R * 0.62 + gap * 2, 0));
+      rpsPill(fx(i), py - palmH / 2 + R * 0.18, fw * 0.98, R * 0.62, 0);
+    }
+    if (kind === 'paper') {                                         // thumb out to the side
+      cut(() => rpsPill(-palmW / 2 - R * 0.05, py + R * 0.05, fw + gap * 2, R * 1.0 + gap * 2, -0.75));
+      rpsPill(-palmW / 2 - R * 0.05, py + R * 0.05, fw, R * 1.0, -0.75);
+    } else {                                                        // thumb tucked across the front
+      const tw = palmW * 0.62, ty = py + R * 0.12;
+      cut(() => rpsPill(-palmW * 0.12, ty, tw + gap * 2, fw * 0.95 + gap * 2, -0.12));
+      rpsPill(-palmW * 0.12, ty, tw, fw * 0.95, -0.12);
+    }
+    g.restore();
+  } finally { ctx = main; }
+  ctx.save(); ctx.globalAlpha *= alpha == null ? 1 : alpha; ctx.translate(x, y); ctx.rotate(rot || 0); ctx.scale(sc || 1, sc || 1);
+  ctx.drawImage(rpsHandCv, -pad, -pad); ctx.restore();
+}
+function rpsTextFit(text, weight, px, maxW) { ctx.font = fnt(weight, px); const w = ctx.measureText(text).width; if (w > maxW) ctx.font = fnt(weight, px * maxW / w); }
+function rpsBanner() {
+  const t = rpsPhaseT();
+  if (rps.phase === 'intro') return { big: 'Rock, paper, scissors!', sub: rps.why === 'fist' ? 'You\u2019re on. Best of 3.' : 'Best of 3. Throw on \u201cshoot!\u201d', k: Math.min(1, t / 0.3) };
+  if (rps.phase === 'count') {
+    const i = Math.floor(t / RPS.beatSec), w = ['rock\u2026', 'paper\u2026', 'scissors\u2026'];
+    if (i < 3) return { big: w[i], sub: 'round ' + rps.round, k: backOut(((t % RPS.beatSec) / RPS.beatSec) / 0.35) };
+    return { big: 'shoot!', sub: '', k: backOut((t - rpsShootAt()) / 0.2), hot: true };
+  }
+  if (rps.phase === 'reveal') {
+    const V = { rock: 'smashes', paper: 'covers', scissors: 'cut' }, sub = rps.result === 'bot' ? `my ${rps.bot} ${V[rps.bot]} your ${rps.player}` : rps.result === 'you' ? `your ${rps.player} ${V[rps.player]} my ${rps.bot}` : `we both threw ${rps.bot}`;
+    return { big: rps.result === 'bot' ? 'I win!' : rps.result === 'you' ? 'You win!' : 'Tie!', sub, k: backOut(t / 0.3), res: rps.result };
+  }
+  if (rps.phase === 'miss') return { big: 'I didn\u2019t see your throw!', sub: rps.misses >= RPS.maxMisses ? 'Let\u2019s play later.' : 'Hold your hand up where I can see it.', k: backOut(t / 0.3) };
+  if (rps.phase === 'final') {
+    if (rps.misses >= RPS.maxMisses && rps.me + rps.you === 0) return { big: 'Maybe later!', sub: 'Tap the clock any time to play.', k: backOut(t / 0.3) };
+    const sc = `${Math.max(rps.me, rps.you)}\u2013${Math.min(rps.me, rps.you)}`;
+    return { big: rps.me > rps.you ? `I win ${sc}!` : rps.you > rps.me ? `You win ${sc}!` : 'Call it a draw!', sub: rps.me > rps.you ? 'Rematch any time. Hold up a fist.' : rps.you > rps.me ? 'Good game! Hold up a fist for a rematch.' : '', k: backOut(t / 0.3), res: rps.me > rps.you ? 'bot' : rps.you > rps.me ? 'you' : 'tie' };
+  }
+  return { big: '', sub: '', k: 1 };
+}
+function drawRps(L, bl) {
+  const t = rpsPhaseT();
+  // the face: two pill eyes on the left
+  ctx.fillStyle = '#fff'; ctx.strokeStyle = '#fff';
+  ctx.save(); ctx.translate(L.x, L.y); ctx.rotate(cur.frot); ctx.scale(cur.fs, cur.fs);
+  drawEye(cur.L, -SEP * U * L.S, 0, -1, bl, L); drawEye(cur.R, SEP * U * L.S, 0, 1, bl, L);
+  ctx.restore();
+  // the bot's hand on the right: pumps a fist on each beat, pops its throw on "shoot!"
+  const R = L.hr; let kind = 'rock', hy = L.hy, rot = -0.12, sc = 1, a = 1;
+  if (rps.phase === 'intro') { const e = backOut(clamp((t - 0.3) / 0.6, 0, 1)); sc = e; rot = -0.12 + 0.1 * Math.sin(t * 6) * (1 - e); }
+  else if (rps.phase === 'count') {
+    const sh = rpsShootAt();
+    if (t < sh) { const u = (t % RPS.beatSec) / RPS.beatSec; hy -= R * 0.55 * Math.sin(u * Math.PI); rot = -0.12 - 0.22 * Math.sin(u * Math.PI); }
+    else { kind = rps.bot; const e = backOut(clamp((t - sh) / 0.25, 0, 1)); sc = 0.7 + 0.3 * e; rot = -0.06 * (1 - e); }
+  } else if (rps.phase === 'reveal' || (rps.phase === 'final' && rps.bot)) { kind = rps.bot; if (rps.phase === 'final') a = 0.35; }
+  else if (rps.phase === 'miss') { kind = rps.bot; a = 0.5; }
+  if (rps.phase === 'reveal' && rps.result === 'bot') { hy -= R * 0.12 * Math.abs(Math.sin(t * 7)) * (1 - ease((t - 1.6) / 0.6)); }
+  if (rps.phase === 'reveal' && rps.result === 'you') { hy += R * 0.12 * ease(t / 0.8); rot += 0.12 * ease(t / 0.8); a = 0.7; }
+  drawRpsHand(kind, L.hx, hy, R, rot, sc, '#fff', a);
+  if (kind !== 'rock' || rps.phase === 'reveal' || (rps.phase === 'count' && t >= rpsShootAt())) {
+    ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    if (rps.phase === 'reveal' || (rps.phase === 'count' && t >= rpsShootAt())) { rpsTextFit(kind.toUpperCase(), 800, 4.2 * U, W * 0.3); ctx.fillText(kind.toUpperCase(), L.hx, L.hy + R * 1.55); }
+  }
+  // banner (center top, below the mini clock), then the score line near the bottom
+  const b = rpsBanner();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const bx = W / 2, by = H * 0.17, bigPx = 8.5 * U * (b.big.length > 14 ? 0.78 : 1);
+  ctx.save(); ctx.translate(bx, by); const k = clamp(b.k, 0, 1.3); ctx.scale(0.6 + 0.4 * k, 0.6 + 0.4 * k);
+  ctx.fillStyle = b.hot ? '#FFD84A' : b.res === 'you' ? '#3EC46D' : b.res === 'bot' ? '#FFB86B' : '#fff';
+  rpsTextFit(b.big, 900, bigPx, W * 0.9); ctx.fillText(b.big, 0, 0); ctx.restore();
+  if (b.sub) { ctx.fillStyle = 'rgba(255,255,255,0.6)'; rpsTextFit(b.sub, 600, 3.2 * U, W * 0.86); ctx.fillText(b.sub, bx, by + 7.6 * U); }
+  // score: me vs you, best of 3
+  ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  const s = `me ${rps.me}  \u00b7  you ${rps.you}   (first to ${RPS.toWin})`;
+  rpsTextFit(s, 600, 2.7 * U, W * 0.6); ctx.fillText(s, W / 2, H * 0.875);
+}
+function drawRpsInvite() {                                            // small, calm invitation chip above the wordmark
+  const t = now - rps.invite; if (rps.on || t < 0 || t > RPS.inviteSec) return;
+  const a = clamp(t / 0.6, 0, 1) * clamp((RPS.inviteSec - t) / 0.8, 0, 1); if (a <= 0) return;
+  const text = 'Rock, paper, scissors? Hold up a fist', px = 3 * U;
+  ctx.save(); ctx.globalAlpha = a * 0.85; ctx.font = fnt(650, px); const tw = ctx.measureText(text).width, r = px * 0.75;
+  const x = W / 2 - (tw + r * 3) / 2, y = H * 0.82;
+  rps.inviteRect = { x: W / 2, y, hw: Math.max((tw + r * 3) / 2 + 2 * U, 70 * DPR), hh: Math.max(3 * U, 32 * DPR), until: rps.invite + RPS.inviteSec };
+  drawRpsHand('rock', x + r, y - r * 0.15 - r * 0.25 * Math.abs(Math.sin(t * 4)), r, -0.15, 1, '#fff');
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText(text, x + r * 3, y); ctx.restore();
+}
+function drawFistHold(L) {                                           // small fist + filling ring while a fist is held up
+  if (rps.on || !rps.fistSince) return;
+  const t = now - rps.fistSince, p = clamp(t / RPS.triggerHoldSec, 0, 1), a = clamp(t / 0.15, 0, 1);
+  const R = Math.min(H * 0.045, W * 0.035), x = W / 2, y = H * 0.82, col = L && L.blob ? '#000' : '#fff', rr = R * 1.75;
+  ctx.save(); ctx.strokeStyle = col; ctx.lineWidth = Math.max(2, R * 0.16); ctx.lineCap = 'round';
+  ctx.globalAlpha = 0.22 * a; ctx.beginPath(); ctx.arc(x, y, rr, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 0.9 * a; ctx.beginPath(); ctx.arc(x, y, rr, -Math.PI / 2, -Math.PI / 2 + Math.max(0.02, p) * Math.PI * 2); ctx.stroke();
+  ctx.restore();
+  drawRpsHand('rock', x, y + R * 0.1, R, -0.12, 0.9 + 0.12 * backOut(p), col, (0.45 + 0.55 * p) * a);
+}
+function rpsSimFist(opt) {                                             // test hook: a synthetic held fist through the real trigger
+  opt = opt || {};
+  if (!opt.keepCool) rps.coolUntil = Math.min(rps.coolUntil, now);   // test hook: a deliberate fist from someone at the desk
+  rps.sim = { until: now + (opt.sec || 2.0), next: now, seq: 0, gesture: opt.gesture == null ? 'Closed_Fist' : opt.gesture,
+    score: opt.score == null ? 0.6 : opt.score, mask: opt.mask | 0, dropEvery: opt.dropEvery == null ? 4 : opt.dropEvery,
+    box: opt.box == null ? 0.25 : opt.box, conf: opt.conf == null ? 0.95 : opt.conf };
+  if (APP) console.info('perf rps sim ' + JSON.stringify({ gesture: rps.sim.gesture, score: rps.sim.score, mask: rps.sim.mask, cool: +Math.max(0, rps.coolUntil - now).toFixed(1), allowed: rpsFistAllowed(), canStart: rpsCanStart(), cam: !!SENSE.cam }));
+  return true;
+}
+function rpsExpose(G) {
+  G.rpsSimFist = rpsSimFist;
+  G.rpsStart = () => rpsStart('debug');
+  G.rps = { start: () => rpsStart('debug'), stop: () => rpsEnd('debug'), mock: g => { rps.mock = g || null; return rps.mock; }, forceBot: g => { rps.forceBot = g || null; return rps.forceBot; },
+    invite: () => { rps.invite = now; }, simFist: rpsSimFist, fistish: rpsFistish, classify: rpsClassify, random: rpsRandomThrow,
+    get state() { return { on: rps.on, phase: rps.phase, t: +rpsPhaseT().toFixed(2), round: rps.round, me: rps.me, you: rps.you, misses: rps.misses, bot: rps.bot, player: rps.player, result: rps.result, votes: Object.assign({}, rps.votes), fistSince: rps.fistSince, fistN: rps.fistN, fistMiss: rps.fistMiss, cool: Math.max(0, rps.coolUntil - now), clockTap: miniRect && { x: miniRect.x / DPR, y: miniRect.y / DPR }, boost: !!SENSE.handsBoost, hist: rps.hist.slice() }; } };
+}
+
 // ---------- v1.5: PONG - two roster bots play a live, simulated game around the clock ----------
 // Fixed-step physics (240 Hz), imperfect AI (reaction delay + aim error that grows with ball speed),
 // angle from paddle hit position, gradual speed ramp, first to 11. No allocation per frame.
@@ -735,6 +1306,7 @@ function hexLum(hex) {
   return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
 }
 function faceBox(L) {                                               // rough on-screen extent of eyes / bodies
+  if (L.pk) { const p = L.pk, r = p.R * (cur.fs || 1), C = COSTUMES[pkc.cur]; return { x0: p.x - r * 1.45, x1: p.x + r * 1.45, y0: p.y - r * (C.top || 1.35), y1: p.y + r * (C.bot || 1.05) }; }
   if (L.theme === 'chars') { let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9; for (const p of L.pos) { x0 = Math.min(x0, p.x - L.R * 1.3); x1 = Math.max(x1, p.x + L.R * 1.3); y0 = Math.min(y0, p.y - L.R * 1.6); y1 = Math.max(y1, p.y + L.R * 1.3); } return { x0, x1, y0, y1 }; }
   const hw = (SEP + EW) * U * L.S * 1.4 * cur.fs, hh = EH * U * L.S * 0.8 * cur.fs;
   return { x0: L.x - hw, x1: L.x + hw, y0: L.y - hh, y1: L.y + hh };
@@ -750,7 +1322,7 @@ function clockStr() {                                              // h:mm (12h,
   return mini.text;
 }
 function drawMiniClock(L, dt) {
-  const target = advShow ? 1 : (theme === 'clock' || theme === 'pong' || (trans && !trans.kind && (trans.to === 'clock' || trans.to === 'pong')) || (trans && trans.kind === 'swipe' && trans.look.theme === 'pong')) ? 0 : (trans && trans.kind === 'swipe' ? 0.45 : 1);
+  const target = advShow || rps.on ? 1 : (theme === 'clock' || theme === 'pong' || (trans && !trans.kind && (trans.to === 'clock' || trans.to === 'pong')) || (trans && trans.kind === 'swipe' && trans.look.theme === 'pong')) ? 0 : (trans && trans.kind === 'swipe' ? 0.45 : 1);
   mini.a += (target - mini.a) * (1 - Math.exp(-dt / 0.35));          // smooth cross-fade, never pops
   if (mini.a < 0.005) return;
   clockStr();
@@ -769,6 +1341,7 @@ function drawMiniClock(L, dt) {
   // background under the text: blob colour if inside the big blob circle, else black stage
   let bgLum = 0;
   if (L.blob) { const b = L.blob, cy = b.y; if (Math.hypot(x + tw / 2 - b.x, my - cy) < b.R * (cur.fs || 1)) bgLum = hexLum(L.bg); }
+  if (L.pk) { const p = L.pk; if (Math.hypot((x + tw / 2 - p.x) / (p.R * 1.06), (my - p.y) / (p.R * 0.94)) < 1) bgLum = hexLum(PK.body); }
   mini.lum += ((bgLum > 0.179 ? 1 : 0) - mini.lum)   // WCAG: dark text gives more contrast above L~0.18
    * (1 - Math.exp(-dt / 0.3));
   const c = Math.round(255 * (1 - mini.lum));                         // white on dark, near-black on light
@@ -777,6 +1350,7 @@ function drawMiniClock(L, dt) {
   ctx.fillStyle = `rgb(${c},${c},${c})`; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
   ctx.fillText(mini.text, x, my);
   ctx.restore();
+  miniRect = mini.a > 0.5 ? { x: x + tw / 2, y: my, hw: Math.max(tw / 2 + 2 * U, 60 * DPR), hh: Math.max(F, 34 * DPR) } : null;   // v1.12.1 tap -> RPS
 }
 function drawSweat(L) {                                            // sweat drop when > 85%
   if (L.theme === 'pong' || isGameTheme(L.theme) || advShow) return;
@@ -815,11 +1389,21 @@ function layout() {
   if (theme === 'chars') {
     const d = drift(now), n = Math.max(1, cast.length);
     const R0 = Math.min(n === 1 ? 24 * U : n === 2 ? 19 * U : 15.5 * U, W / (n * 2.9));
-    const gx = W / 2 + d.x * 0.85 + (cur.fx + peekCur) * U, gy = H / 2 + d.y * 0.85 + off;
+    const half = (n - 1) / 2 * R0 * 2.75 + R0 * 1.35;                 // v1.11: keep the whole group on the (narrower) stage
+    const gx0 = W / 2 + clamp(d.x * 0.85, -Math.max(0, W / 2 - half), Math.max(0, W / 2 - half));
+    const gx = gx0 + (cur.fx + peekCur) * U, gy = H / 2 + d.y * 0.85 + off;
     const order = n === 3 ? [1, 0, 2] : [0, 1, 2];                     // primary in the middle of three
     const pos = cast.map((c, i) => ({ x: gx + (order[i] - (n - 1) / 2) * R0 * 2.75, y: gy + (i ? Math.sin(now * 0.9 + comps[i - 1].phase) * 0.6 * U : cur.fy * U) }));
     const S = R0 * 0.36 / (EH * U);
     return { theme, x: pos[0].x, y: pos[0].y, S, rot0: -0.38, col: '#fff', bg: '#000', blob: null, R: R0, pos };
+  }
+  if (theme === 'pumpkin') {                                         // v1.13: centred pumpkin, drifts for anti burn-in
+    // v1.14: a bit smaller and lower so the tallest hat (1.8 R) and the wizard beard (1.25 R) + caption always fit
+    const d = drift(now), R0 = Math.min(H * 0.25, W * 0.22);
+    const yMin = 2 * U + R0 * 1.82, yMax = H - 14 * U - R0 * 1.25, yMid = (yMin + yMax) / 2, ay = Math.max(0, (yMax - yMin) / 2);
+    const ax = Math.max(0, W / 2 - R0 * 1.6);
+    const x = W / 2 + clamp(d.x, -ax, ax) + (cur.fx + peekCur) * U * 1.5, y = yMid + clamp(d.y, -ay, ay) + cur.fy * U * 1.5 + off;
+    return { theme, x, y, S: R0 * 0.42 / (EW * U), rot0: 0, col: '#fff', bg: '#000', blob: null, pk: { x, y, R: R0 } };
   }
   if (theme === 'pong' || isGameTheme(theme) || isNewsTheme(theme)) return { theme, x: W / 2, y: H / 2 + off, S: 0.5, rot0: 0, col: '#fff', bg: '#000', blob: null, off };
   if (theme === 'clock') {
@@ -1161,11 +1745,12 @@ function frame(ms) {
   else { perfBuf[perfI] = dt * 1000; perfI = (perfI + 1) % PERF_N; perfCount++; dt = Math.min(dt, 0.05); }
   now += dt;
   if (now > perfCalcAt) { perfCalcAt = now + 1; perfStats = perfStatsCalc(); }
-  if (now > perfLogAt) { perfLogAt = now + 30; if (perfStats && APP) console.info('perf ' + JSON.stringify({ fps: +perfStats.fps.toFixed(1), p50: +perfStats.p50.toFixed(1), p90: +perfStats.p90.toFixed(1), p99: +perfStats.p99.toFixed(1), jank: +perfStats.jank.toFixed(2), det: +(SENSE.detMs || 0).toFixed(1), block: +(SENSE.mainBlockMs || 0).toFixed(1), camFps: +(SENSE.fps || 0).toFixed(1), canvas: W + 'x' + H, deleg: SENSE.delegate || '' })); }
+  if (now > perfLogAt) { perfLogAt = now + 30; if (perfStats && APP) console.info('perf ' + JSON.stringify({ fps: +perfStats.fps.toFixed(1), p50: +perfStats.p50.toFixed(1), p90: +perfStats.p90.toFixed(1), p99: +perfStats.p99.toFixed(1), jank: +perfStats.jank.toFixed(2), det: +(SENSE.detMs || 0).toFixed(1), block: +(SENSE.mainBlockMs || 0).toFixed(1), camFps: +(SENSE.fps || 0).toFixed(1), canvas: W + 'x' + H, deleg: SENSE.delegate || '', hands: SENSE.handStats ? Object.assign({}, SENSE.handStats) : null, faces: (SENSE.faces || []).length, err: SENSE.err || '' })); if (SENSE.handStats) SENSE.handStats = { runs: 0, found: 0, labels: {} }; }
 
   dtFrame = dt;
   updateTransition();
   presUpdate();
+  rpsTick();                                                         // v1.12 rock-paper-scissors
   const s = resetTarget(tgt);
 
   if (sleeping) {
@@ -1187,7 +1772,7 @@ function frame(ms) {
     if (pendingDouble && now > pendingDouble) { pendingDouble = 0; switchTheme(); }
     senseBefore(s);
     rotateTick();
-    if (!move && !trans && !bk.on && now > nextMoveAt) chooseMove();
+    if (!move && !trans && !bk.on && !rps.on && now > nextMoveAt) chooseMove();
     if (move) {
       const t = now - move.start;
       if (t >= move.def.dur) { move = null; nextMoveAt = now + (engaged() ? rnd(6, 12) : rnd(2.5, 6.5)); }
@@ -1203,6 +1788,7 @@ function frame(ms) {
     holdUpdate();
     holdApply(s);
     bkApply(s);
+    rpsApply(s);
   }
 
   // blinking
@@ -1217,8 +1803,10 @@ function frame(ms) {
   if (steps >= 60) acc = 0;
   lerpState(cur, physPrev, phys, acc / STEP);
   if (theme === 'chars') updateComps(dt);
+  pkUpdate(dt);
+  pkCostumeTick();
   newsFrame();
-  if (!newsPaused()) { pongUpdate(dt); advUpdate(); gamesUpdate(dt); }   // a breaking takeover freezes the look underneath
+  if (!newsPaused() && !rps.on) { pongUpdate(dt); advUpdate(); gamesUpdate(dt); }   // breaking takeover / v1.12 RPS freeze the look underneath
 
   draw(bl);
 }
@@ -1234,25 +1822,26 @@ function drawEye(e, cx, cy, sideSign, bl, L) {
   const lid = clamp(Math.max(e.lid, bl), 0, 1);
   const LX = L.lx != null ? L.lx : cur.lx, LY = L.ly != null ? L.ly : cur.ly;
   const persp = 1 - 0.1 * Math.abs(LX);
-  const ew = EW * u * e.w * persp * (1 + 0.12 * lid);
+  const ew = EW * u * e.w * persp * (1 + 0.12 * lid) * (L.ew || 1);   // v1.13: L.ew / L.eh reshape (pumpkin dots <-> pills)
   const x = cx + (e.dx + LX * 5.5) * u, y = cy + (e.dy + LY * 4.5) * u;
   ctx.save(); ctx.translate(x, y); ctx.rotate(e.rot + L.rot0 * (1 - 0.75 * clamp(e.happy, 0, 1)));
   // Morph, never crossfade: happy 0..0.5 squashes the pill flat, 0.5..1 bends it into a ^ arc.
   const hp = clamp(e.happy, 0, 1);
-  const thick = EW * u * 0.42 * Math.max(0.5, e.h);
+  const hs = L.hs || 1;                       // v1.13: smaller happy arcs for close-set pumpkin eyes
+  const thick = EW * u * 0.42 * Math.max(0.5, e.h) * hs;
   if (hp < 0.5) {
     const k = ease(hp / 0.5);
-    const fullH = EH * u * e.h;
+    const fullH = EH * u * e.h * (L.eh || 1);
     const minH = EW * u * 0.2;
     let eh = Math.max(minH, fullH * (1 - lid));
     eh = eh + (thick - eh) * k;                 // flatten toward arc thickness
-    const ww = ew + (ew * 1.15 - ew) * k;
+    const ww = ew + (ew * 1.15 * hs - ew) * k;
     ctx.translate(0, (fullH - Math.max(minH, fullH * (1 - lid))) * 0.12 * (1 - k));
     pill(ww, eh);
   } else {
     const k = ease((hp - 0.5) / 0.5);           // 0 = flat bar, 1 = full arc
-    const Rr = EW * u * e.w * 0.62, TF = Math.PI * 0.84;
-    const half0 = ew * 1.15 / 2 - thick / 2;    // flat bar half-length (end-cap centres)
+    const Rr = EW * u * e.w * 0.62 * hs, TF = Math.PI * 0.84;
+    const half0 = ew * 1.15 / 2 * hs - thick / 2;    // flat bar half-length (end-cap centres)
     const th = Math.max(0.02, TF * k);
     const halfK = half0 + (Rr * Math.sin(TF / 2) - half0) * k;
     const rad = halfK / Math.sin(th / 2);       // big radius ~ straight bar, shrinking into the arc
@@ -1330,6 +1919,221 @@ function drawChars(L, bl) {
   const sq = cur.bsq, p = L.pos[0];
   drawChar(cast[0], p.x, p.y, R0, (1 + sq) * cur.fs, (1 - sq) * cur.fs, cur.frot, { L: cur.L, R: cur.R }, bl, null);
 }
+
+// ---------- v1.13: Grok Bot pumpkin (the Halloween app avatar) ----------
+// Flat orange pumpkin, darker scalloped bottom, short curled stem, no carving. White Grok Bot eyes: round dots at rest,
+// tall pills that dart around when active (any lively move, talking, music, touch, and short 'typing' bursts), while the
+// whole pumpkin rocks left-right from its base. Blink / gaze / presence / dance all reuse the shared eye + move system.
+const PK = { body: '#EA5514', shade: '#C4440F', stem: '#4A4636', stemHi: '#6E6952' };
+const pk = { act: 0, ph: 0, dx: 0, dy: 0, vx: 0, vy: 0, tx: 0, ty: 0, dartNext: 0, burstUntil: 0, burstNext: 6 };
+const PK_CALM = /^(sleepy|sigh|yawn|cover|shy|mmhm|peek|lookaround|wake|curious|doodle)$/;
+function pkActiveTarget() {
+  if (sleeping || theme !== 'pumpkin') return 0;
+  if (move && !PK_CALM.test(move.name)) return 1;
+  if (pres.talking || pres.music || touch || trans) return 1;
+  if (now > pk.burstNext && now > pk.burstUntil) { pk.burstUntil = now + rnd(2.5, 5); pk.burstNext = pk.burstUntil + rnd(10, 30); }
+  return now < pk.burstUntil ? 1 : 0;
+}
+function pkUpdate(dt) {
+  const tg = pkActiveTarget();
+  pk.act += (tg - pk.act) * (1 - Math.exp(-dt / (tg > pk.act ? 0.18 : 0.45)));
+  const hz = pres.music && SENSE.bpm ? SENSE.bpm / 120 : 1.45;          // rock on the beat when music plays
+  pk.ph += dt * Math.PI * 2 * hz;
+  if (pk.act > 0.35 && now > pk.dartNext) { pk.tx = rnd(-1, 1); pk.ty = rnd(-0.8, 0.75); pk.dartNext = now + rnd(0.22, 0.55); }
+  if (pk.act < 0.2) { pk.tx = 0; pk.ty = 0; }
+  const w = 20; pk.vx += (w * w * (pk.tx - pk.dx) - 2 * 0.75 * w * pk.vx) * dt; pk.vy += (w * w * (pk.ty - pk.dy) - 2 * 0.75 * w * pk.vy) * dt;
+  pk.dx += pk.vx * dt; pk.dy += pk.vy * dt;
+}
+// ---------- v1.14: corny Halloween costumes for the pumpkin ----------
+// Each costume: back (behind the body: capes, collars, pitchfork), under (face paint / masks / noses, drawn before the
+// eyes so the white eyes always sit on top), over (things that may cover: glasses rims, eyepatch, brows), hat (drops on).
+// Everything is drawn inside the pumpkin's body transform, so costumes rock, hop and squash with it.
+// top/bot = extent above/below the body centre in R (layout + clock dodge); gaze < 1 keeps eyes inside eye holes.
+const pkEll = (x, y, rx, ry, rot) => { ctx.beginPath(); ctx.ellipse(x, y, rx, ry, rot || 0, 0, Math.PI * 2); };
+function pkStar(x, y, r) { ctx.beginPath(); for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); } ctx.closePath(); ctx.fill(); }
+function pkCone(R, col, edge) {                                       // floppy pointed hat (witch / wizard)
+  ctx.beginPath(); ctx.moveTo(-0.56 * R, -0.84 * R); ctx.quadraticCurveTo(-0.28 * R, -1.32 * R, 0.0, -1.7 * R);
+  ctx.quadraticCurveTo(0.26 * R, -1.8 * R, 0.5 * R, -1.62 * R); ctx.quadraticCurveTo(0.27 * R, -1.6 * R, 0.17 * R, -1.46 * R);
+  ctx.quadraticCurveTo(0.34 * R, -1.12 * R, 0.56 * R, -0.84 * R); ctx.closePath();
+  ctx.fillStyle = col; ctx.fill(); ctx.lineWidth = 0.03 * R; ctx.strokeStyle = edge; ctx.stroke();
+  pkEll(0, -0.8 * R, 0.98 * R, 0.17 * R, -0.04); ctx.fillStyle = col; ctx.fill(); ctx.stroke();
+}
+function pkBrows(R, hx, y, tilt, col) { ctx.strokeStyle = col; ctx.lineCap = 'round'; ctx.lineWidth = 0.075 * R;
+  for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * (hx - 0.17 * R), y + s * 0 + tilt * R); ctx.quadraticCurveTo(s * hx, y - 0.05 * R, s * (hx + 0.17 * R), y - tilt * R); ctx.stroke(); } }
+const COSTUMES = [
+  { id: 'plain', pun: "Orange you glad I'm plain?", top: 1.2, bot: 0.95 },
+  { id: 'witch', pun: 'Witch way to the candy?', top: 1.8, bot: 0.95, noStem: 1,
+    under(R) { ctx.fillStyle = '#6CC24A'; ctx.beginPath(); ctx.moveTo(-0.13 * R, 0.12 * R); ctx.quadraticCurveTo(-0.16 * R, 0.5 * R, 0.14 * R, 0.62 * R);   // big hooked warty nose
+      ctx.quadraticCurveTo(0.3 * R, 0.66 * R, 0.27 * R, 0.55 * R); ctx.quadraticCurveTo(0.12 * R, 0.5 * R, 0.13 * R, 0.12 * R); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#3F8F2C'; ctx.lineWidth = 0.02 * R; ctx.stroke();
+      ctx.fillStyle = '#3F8F2C'; pkEll(-0.03 * R, 0.4 * R, 0.04 * R, 0.04 * R); ctx.fill(); pkEll(0.2 * R, 0.58 * R, 0.025 * R, 0.025 * R); ctx.fill(); },
+    hat(R) { pkCone(R, '#3E2768', '#7C5CC4');
+      ctx.fillStyle = '#4CB85C'; ctx.beginPath(); ctx.moveTo(-0.5 * R, -0.9 * R); ctx.lineTo(0.5 * R, -0.9 * R); ctx.lineTo(0.44 * R, -1.04 * R); ctx.lineTo(-0.44 * R, -1.04 * R); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#F4C542'; ctx.lineWidth = 0.035 * R; ctx.strokeRect(-0.1 * R, -1.03 * R, 0.2 * R, 0.13 * R); } },
+  { id: 'dracula', pun: 'Fangs for visiting!', top: 1.15, bot: 0.95, noStem: 1, gaze: 0.9,
+    back(R) { ctx.fillStyle = '#C8102E'; for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * 0.3 * R, 0.85 * R); ctx.lineTo(s * 1.38 * R, -0.62 * R); ctx.lineTo(s * 1.18 * R, 0.0); ctx.lineTo(s * 1.32 * R, 0.25 * R); ctx.closePath(); ctx.fill(); }
+      ctx.fillStyle = '#5E0716'; for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * 0.5 * R, 0.75 * R); ctx.lineTo(s * 1.25 * R, -0.45 * R); ctx.lineTo(s * 1.1 * R, 0.05 * R); ctx.closePath(); ctx.fill(); } },
+    under(R) { ctx.strokeStyle = '#2A1208'; ctx.lineWidth = 0.035 * R; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(-0.24 * R, 0.43 * R); ctx.quadraticCurveTo(0, 0.53 * R, 0.24 * R, 0.43 * R); ctx.stroke();
+      ctx.fillStyle = '#fff'; for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * 0.06 * R, 0.475 * R); ctx.lineTo(s * 0.17 * R, 0.465 * R); ctx.lineTo(s * 0.115 * R, 0.65 * R); ctx.closePath(); ctx.fill(); } },
+    hat(R) { ctx.beginPath(); ctx.moveTo(-1.02 * R, -0.25 * R); ctx.quadraticCurveTo(-0.98 * R, -1.08 * R, 0, -1.04 * R); ctx.quadraticCurveTo(0.98 * R, -1.08 * R, 1.02 * R, -0.25 * R);
+      ctx.quadraticCurveTo(0.8 * R, -0.6 * R, 0.38 * R, -0.58 * R); ctx.quadraticCurveTo(0.12 * R, -0.56 * R, 0, -0.34 * R); ctx.quadraticCurveTo(-0.12 * R, -0.56 * R, -0.38 * R, -0.58 * R); ctx.quadraticCurveTo(-0.8 * R, -0.6 * R, -1.02 * R, -0.25 * R); ctx.closePath();
+      ctx.fillStyle = '#151515'; ctx.fill(); ctx.strokeStyle = '#5A5A5A'; ctx.lineWidth = 0.03 * R; ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 0.035 * R; ctx.beginPath(); ctx.moveTo(-0.62 * R, -0.86 * R); ctx.quadraticCurveTo(-0.2 * R, -0.98 * R, 0.25 * R, -0.9 * R); ctx.stroke(); } },
+  { id: 'groucho', pun: 'Nose-body will recognize me', top: 1.2, bot: 0.95, gaze: 0.8,
+    nose(R) { ctx.fillStyle = '#F4A6A0'; pkEll(0, 0.36 * R, 0.17 * R, 0.15 * R); ctx.fill(); ctx.fillStyle = 'rgba(255,255,255,0.5)'; pkEll(-0.05 * R, 0.31 * R, 0.045 * R, 0.03 * R); ctx.fill();
+      ctx.fillStyle = '#141414'; ctx.beginPath(); ctx.moveTo(0, 0.49 * R); ctx.bezierCurveTo(-0.15 * R, 0.44 * R, -0.36 * R, 0.48 * R, -0.42 * R, 0.64 * R); ctx.bezierCurveTo(-0.25 * R, 0.6 * R, -0.1 * R, 0.64 * R, 0, 0.57 * R);
+      ctx.bezierCurveTo(0.1 * R, 0.64 * R, 0.25 * R, 0.6 * R, 0.42 * R, 0.64 * R); ctx.bezierCurveTo(0.36 * R, 0.48 * R, 0.15 * R, 0.44 * R, 0, 0.49 * R); ctx.fill(); },
+    over(R, e) { this.nose(R); ctx.strokeStyle = '#141414'; ctx.lineWidth = 0.06 * R; for (const s of [-1, 1]) { pkEll(s * 0.27 * R, e.y, 0.27 * R, 0.29 * R); ctx.stroke(); }
+      ctx.beginPath(); ctx.moveTo(-0.04 * R, e.y - 0.06 * R); ctx.quadraticCurveTo(0, e.y - 0.1 * R, 0.04 * R, e.y - 0.06 * R); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-0.54 * R, e.y - 0.04 * R); ctx.lineTo(-0.95 * R, e.y - 0.12 * R); ctx.moveTo(0.54 * R, e.y - 0.04 * R); ctx.lineTo(0.95 * R, e.y - 0.12 * R); ctx.stroke();
+      ctx.lineWidth = 0.1 * R; ctx.lineCap = 'round'; for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * 0.1 * R, -0.36 * R); ctx.quadraticCurveTo(s * 0.28 * R, -0.5 * R, s * 0.48 * R, -0.38 * R); ctx.stroke(); } } },
+  { id: 'pirate', pun: 'Yo ho ho and a bottle of gourd', top: 1.35, bot: 0.95, noStem: 1, oneEye: 1,
+    over(R, e) { ctx.strokeStyle = '#111'; ctx.lineWidth = 0.05 * R; ctx.beginPath(); ctx.moveTo(e.hx - 0.05 * R, e.y - 0.15 * R); ctx.lineTo(-0.72 * R, -0.75 * R); ctx.moveTo(e.hx + 0.2 * R, e.y - 0.02 * R); ctx.lineTo(1.04 * R, -0.18 * R); ctx.stroke();
+      ctx.fillStyle = '#111'; pkEll(e.hx, e.y + 0.02 * R, 0.24 * R, 0.21 * R, 0.1); ctx.fill(); ctx.strokeStyle = '#3a3a3a'; ctx.lineWidth = 0.02 * R; ctx.stroke(); },
+    under(R) { ctx.strokeStyle = '#2A1208'; ctx.lineWidth = 0.035 * R; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(-0.28 * R, 0.45 * R); ctx.quadraticCurveTo(0.02 * R, 0.6 * R, 0.24 * R, 0.4 * R); ctx.stroke(); },
+    hat(R) { ctx.beginPath(); ctx.moveTo(-1.15 * R, -0.62 * R); ctx.quadraticCurveTo(-0.6 * R, -0.78 * R, 0, -0.7 * R); ctx.quadraticCurveTo(0.6 * R, -0.78 * R, 1.15 * R, -0.62 * R);
+      ctx.quadraticCurveTo(0.85 * R, -1.08 * R, 0.4 * R, -1.18 * R); ctx.quadraticCurveTo(0, -1.36 * R, -0.4 * R, -1.18 * R); ctx.quadraticCurveTo(-0.85 * R, -1.08 * R, -1.15 * R, -0.62 * R); ctx.closePath();
+      ctx.fillStyle = '#1B1B1B'; ctx.fill(); ctx.strokeStyle = '#E8B53A'; ctx.lineWidth = 0.045 * R; ctx.stroke();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.04 * R; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(-0.17 * R, -0.82 * R); ctx.lineTo(0.17 * R, -1.04 * R); ctx.moveTo(0.17 * R, -0.82 * R); ctx.lineTo(-0.17 * R, -1.04 * R); ctx.stroke();
+      ctx.fillStyle = '#fff'; pkEll(0, -0.98 * R, 0.11 * R, 0.1 * R); ctx.fill(); ctx.fillRect(-0.06 * R, -0.92 * R, 0.12 * R, 0.07 * R);
+      ctx.fillStyle = '#1B1B1B'; pkEll(-0.04 * R, -0.98 * R, 0.028 * R, 0.03 * R); ctx.fill(); pkEll(0.04 * R, -0.98 * R, 0.028 * R, 0.03 * R); ctx.fill(); } },
+  { id: 'frank', pun: "Frank-n-squash: it's aliiive!", top: 1.2, bot: 0.95, noStem: 1,
+    back(R) { for (const s of [-1, 1]) { ctx.fillStyle = '#A8B2B8'; ctx.fillRect(s > 0 ? 0.85 * R : -1.22 * R, 0.36 * R, 0.37 * R, 0.14 * R); ctx.fillStyle = '#6E787E'; ctx.fillRect(s > 0 ? 1.16 * R : -1.26 * R, 0.31 * R, 0.1 * R, 0.24 * R); } },
+    under(R) { ctx.strokeStyle = '#1E2A16'; ctx.lineWidth = 0.035 * R; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(-0.3 * R, 0.5 * R); ctx.lineTo(0.3 * R, 0.5 * R); ctx.stroke();
+      ctx.lineWidth = 0.025 * R; ctx.beginPath(); ctx.moveTo(0.4 * R, 0.36 * R); ctx.lineTo(0.78 * R, 0.6 * R); for (let i = 0; i < 4; i++) { const t = (i + 0.5) / 4, x = 0.4 + 0.38 * t, y = 0.36 + 0.24 * t; ctx.moveTo((x - 0.04) * R, (y + 0.06) * R); ctx.lineTo((x + 0.04) * R, (y - 0.06) * R); } ctx.stroke();
+      for (let i = -2; i <= 2; i++) { const x = i * 0.12; ctx.moveTo(x * R, 0.46 * R); ctx.lineTo(x * R, 0.54 * R); } ctx.stroke(); },
+    hat(R) { ctx.beginPath(); ctx.moveTo(-0.88 * R, -0.42 * R); ctx.lineTo(-0.9 * R, -1.12 * R); ctx.lineTo(0.9 * R, -1.12 * R); ctx.lineTo(0.88 * R, -0.42 * R);
+      for (let i = 0; i <= 8; i++) { const x = 0.88 - i * 0.22; ctx.lineTo((x - 0.11) * R, (i % 2 ? -0.42 : -0.56) * R); } ctx.closePath();
+      ctx.fillStyle = '#22301D'; ctx.fill(); ctx.strokeStyle = '#5E8A4C'; ctx.lineWidth = 0.03 * R; ctx.stroke(); } },
+  { id: 'mummy', pun: "I'm a wrap star!", top: 1.2, bot: 0.95, gaze: 0.75,
+    under(R) { ctx.save(); pkBodyPath(R); ctx.clip();
+      ctx.fillStyle = '#26150C'; if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(-0.8 * R, -0.3 * R, 1.6 * R, 0.64 * R, 0.3 * R); } else pkEll(0, 0.02 * R, 0.8 * R, 0.32 * R); ctx.fill();
+      for (const [y, rot] of [[-0.86, 0.06], [-0.64, -0.08], [-0.44, 0.05], [0.47, -0.06], [0.66, 0.08], [0.86, -0.04]]) {
+        ctx.save(); ctx.translate(0, y * R); ctx.rotate(rot); ctx.fillStyle = '#EFE8D2'; ctx.fillRect(-1.3 * R, -0.095 * R, 2.6 * R, 0.19 * R);
+        ctx.strokeStyle = '#B9AE90'; ctx.lineWidth = 0.015 * R; ctx.beginPath(); ctx.moveTo(-1.3 * R, 0.02 * R); ctx.lineTo(1.3 * R, 0.02 * R); ctx.stroke(); ctx.restore(); }
+      ctx.restore(); ctx.fillStyle = '#EFE8D2'; ctx.save(); ctx.translate(0.82 * R, 0.62 * R); ctx.rotate(0.9); ctx.fillRect(0, -0.07 * R, 0.42 * R, 0.14 * R); ctx.restore(); } },
+  { id: 'ghost', pun: 'Boo-tiful night, isn\u2019t it?', top: 1.2, bot: 0.95, noStem: 1, gaze: 0.5,
+    under(R, e) { ctx.beginPath(); ctx.moveTo(-1.16 * R, 0.55 * R); ctx.bezierCurveTo(-1.25 * R, -0.6 * R, -0.7 * R, -1.14 * R, 0, -1.14 * R); ctx.bezierCurveTo(0.7 * R, -1.14 * R, 1.25 * R, -0.6 * R, 1.16 * R, 0.55 * R);
+      for (let i = 0; i < 5; i++) { const x0 = 1.16 - i * 0.464, x1 = x0 - 0.464; ctx.quadraticCurveTo((x0 - 0.232) * R, (i % 2 ? 0.52 : 0.78) * R, x1 * R, 0.6 * R); } ctx.closePath();
+      ctx.fillStyle = '#EDEDED'; ctx.fill(); ctx.strokeStyle = '#C9C9C9'; ctx.lineWidth = 0.025 * R; ctx.beginPath(); ctx.moveTo(-0.7 * R, -0.5 * R); ctx.quadraticCurveTo(-0.85 * R, 0.1 * R, -0.75 * R, 0.6 * R); ctx.moveTo(0.75 * R, -0.45 * R); ctx.quadraticCurveTo(0.9 * R, 0.1 * R, 0.8 * R, 0.62 * R); ctx.stroke();
+      ctx.fillStyle = '#121212'; for (const s of [-1, 1]) { pkEll(s * e.hx0, e.y, 0.2 * R, 0.29 * R); ctx.fill(); } pkEll(0, 0.4 * R, 0.08 * R, 0.1 * R); ctx.fill(); } },
+  { id: 'wizard', pun: "You're a wizard, Gourd-y!", top: 1.8, bot: 1.25, noStem: 1,
+    under(R) { ctx.fillStyle = '#C9CDD3'; ctx.beginPath(); ctx.moveTo(-0.62 * R, 0.34 * R); ctx.quadraticCurveTo(-0.55 * R, 0.95 * R, -0.05 * R, 1.25 * R); ctx.quadraticCurveTo(0.05 * R, 1.08 * R, 0.12 * R, 1.22 * R);
+      ctx.quadraticCurveTo(0.6 * R, 0.9 * R, 0.62 * R, 0.34 * R); ctx.quadraticCurveTo(0.3 * R, 0.5 * R, 0, 0.42 * R); ctx.quadraticCurveTo(-0.3 * R, 0.5 * R, -0.62 * R, 0.34 * R); ctx.fill();
+      ctx.strokeStyle = '#9CA2AA'; ctx.lineWidth = 0.02 * R; ctx.beginPath(); ctx.moveTo(-0.2 * R, 0.6 * R); ctx.quadraticCurveTo(-0.18 * R, 0.9 * R, -0.05 * R, 1.1 * R); ctx.moveTo(0.22 * R, 0.6 * R); ctx.quadraticCurveTo(0.22 * R, 0.85 * R, 0.1 * R, 1.05 * R); ctx.stroke(); },
+    hat(R) { pkCone(R, '#2D4FB8', '#6F8FF0'); ctx.fillStyle = '#FFD84A'; pkStar(-0.18 * R, -1.08 * R, 0.1 * R); pkStar(0.22 * R, -1.28 * R, 0.07 * R); pkStar(0.02 * R, -1.48 * R, 0.06 * R); pkStar(0.34 * R, -0.95 * R, 0.06 * R);
+      ctx.beginPath(); ctx.arc(-0.3 * R, -0.92 * R, 0.07 * R, 0.6, 5.2); ctx.arc(-0.27 * R, -0.94 * R, 0.055 * R, 5.0, 0.8, true); ctx.closePath(); ctx.fill(); } },
+  { id: 'devil', pun: 'Devilishly gourd-looking', top: 1.4, bot: 0.95,
+    back(R) { ctx.strokeStyle = '#B11E22'; ctx.lineWidth = 0.06 * R; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(0.85 * R, 0.85 * R); ctx.lineTo(1.3 * R, -0.85 * R); ctx.stroke();
+      ctx.strokeStyle = '#F03A3F'; ctx.lineWidth = 0.055 * R; ctx.beginPath(); ctx.moveTo(1.1 * R, -0.9 * R); ctx.quadraticCurveTo(1.12 * R, -0.75 * R, 1.3 * R, -0.78 * R); ctx.quadraticCurveTo(1.48 * R, -0.75 * R, 1.52 * R, -0.95 * R); ctx.moveTo(1.3 * R, -0.8 * R); ctx.lineTo(1.34 * R, -1.08 * R); ctx.stroke();
+      ctx.fillStyle = '#F03A3F'; for (const [x, y] of [[1.1, -0.9], [1.34, -1.08], [1.52, -0.95]]) { ctx.beginPath(); ctx.moveTo((x - 0.05) * R, (y + 0.02) * R); ctx.lineTo(x * R, (y - 0.12) * R); ctx.lineTo((x + 0.05) * R, (y + 0.02) * R); ctx.fill(); } },
+    under(R) { ctx.fillStyle = '#141414'; ctx.beginPath(); ctx.moveTo(-0.16 * R, 0.6 * R); ctx.quadraticCurveTo(0, 0.66 * R, 0.16 * R, 0.6 * R); ctx.lineTo(0.02 * R, 0.98 * R); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#2A1208'; ctx.lineWidth = 0.035 * R; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(-0.26 * R, 0.42 * R); ctx.quadraticCurveTo(0, 0.56 * R, 0.26 * R, 0.42 * R); ctx.stroke(); },
+    over(R, e) { pkBrows(R, e.hx0, -0.33 * R, 0.07, '#141414'); },
+    hat(R) { ctx.fillStyle = '#E8262C'; ctx.strokeStyle = '#FF6A6E'; ctx.lineWidth = 0.02 * R; for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * 0.3 * R, -0.86 * R); ctx.quadraticCurveTo(s * 0.45 * R, -1.15 * R, s * 0.78 * R, -1.38 * R); ctx.quadraticCurveTo(s * 0.68 * R, -1.08 * R, s * 0.66 * R, -0.74 * R); ctx.closePath(); ctx.fill(); ctx.stroke(); } } },
+  { id: 'skeleton', pun: 'Gourd to the bone', top: 1.2, bot: 0.95, gaze: 0.6,
+    under(R, e) { ctx.fillStyle = '#121212'; for (const s of [-1, 1]) { pkEll(s * e.hx0, e.y, 0.27 * R, 0.33 * R, s * 0.12); ctx.fill(); }
+      ctx.beginPath(); ctx.moveTo(0, 0.28 * R); ctx.quadraticCurveTo(-0.11 * R, 0.4 * R, -0.04 * R, 0.44 * R); ctx.lineTo(0, 0.41 * R); ctx.lineTo(0.04 * R, 0.44 * R); ctx.quadraticCurveTo(0.11 * R, 0.4 * R, 0, 0.28 * R); ctx.fill();
+      ctx.fillStyle = '#F2F2F2'; if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(-0.34 * R, 0.52 * R, 0.68 * R, 0.17 * R, 0.05 * R); } else ctx.fillRect(-0.34 * R, 0.52 * R, 0.68 * R, 0.17 * R); ctx.fill();
+      ctx.strokeStyle = '#121212'; ctx.lineWidth = 0.025 * R; ctx.stroke(); ctx.beginPath(); ctx.moveTo(-0.34 * R, 0.605 * R); ctx.lineTo(0.34 * R, 0.605 * R); for (let i = -2; i <= 2; i++) { ctx.moveTo(i * 0.115 * R, 0.52 * R); ctx.lineTo(i * 0.115 * R, 0.69 * R); } ctx.stroke(); } },
+];
+const COSTUME_BY_ID = Object.fromEntries(COSTUMES.map((c, i) => [c.id, i]));
+function pkBodyPath(R) {
+  ctx.beginPath();
+  for (let i = 0; i <= 144; i++) { const t = i / 144 * Math.PI * 2, c = Math.cos(t), sn = Math.sin(t), e = 0.9;
+    let X = Math.sign(c) * Math.pow(Math.abs(c), e) * 1.06 * R, Y = Math.sign(sn) * Math.pow(Math.abs(sn), e) * 0.92 * R;
+    if (sn > 0) { const u = X / (0.98 * R); if (Math.abs(u) < 1) { const lobe = Math.pow(Math.abs(Math.sin((u + 1) * Math.PI * 2)), 0.55);   // 4 humps, sharp creases
+      Y += sn * sn * (lobe - 0.75) * 0.075 * R; } }
+    i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); }
+  ctx.closePath();
+}
+// costume state: cur = shown costume, prev = the one being poofed away; t0 = swap start; poof = smoke swap vs simple drop-on
+const pkc = { cur: 0, prev: -1, t0: -9, poof: false, next: 0, lastTheme: '', tapAt: 0, cap: '', capT: -99, deck: [] };
+function pkPickCostume() {                                            // shuffled deck so all costumes come round; plain ~1 in 11
+  if (!pkc.deck.length) { pkc.deck = COSTUMES.map((c, i) => i); for (let i = pkc.deck.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pkc.deck[i], pkc.deck[j]] = [pkc.deck[j], pkc.deck[i]]; } }
+  let i = pkc.deck.pop(); if (i === pkc.cur && pkc.deck.length) { const j = pkc.deck.pop(); pkc.deck.unshift(i); i = j; }
+  return i;
+}
+function pkSwap(idx, poof) {
+  pkc.prev = poof ? pkc.cur : -1; pkc.cur = idx == null ? pkPickCostume() : idx; pkc.t0 = now; pkc.poof = !!poof;
+  pkc.next = now + rnd(120, 240); pkc.cap = COSTUMES[pkc.cur].pun; pkc.capT = now + (poof ? 0.45 : 0.6);
+  if (poof && theme === 'pumpkin' && !move) play('surprised');
+}
+function pkCostumeTick() {
+  if (theme === 'pumpkin' && pkc.lastTheme !== 'pumpkin') pkSwap(null, false);   // a fresh costume every time the look comes up
+  pkc.lastTheme = theme;
+  if (theme !== 'pumpkin') return;
+  if (now > pkc.next && !sleeping && !trans) pkSwap(null, true);
+  if (pkc.tapAt && now > pkc.tapAt) { pkc.tapAt = 0; if (!trans && !pendingDouble && taps.length < 2 && theme === 'pumpkin') pkSwap(null, true); }
+}
+function inPumpkin(x, y) { const L = lay; if (!L || !L.pk) return false; const p = L.pk; return Math.hypot((x - p.x) / (p.R * 1.1), (y - p.y) / p.R) < 1.05; }
+
+function drawPumpkin(L, bl) {
+  const p = L.pk, R = p.R, a = pk.act;
+  const wob = a * 0.13 * Math.sin(pk.ph), hop = a * Math.abs(Math.sin(pk.ph)) * R * 0.035;
+  const sq = cur.bsq + a * 0.035 * Math.cos(pk.ph * 2);
+  // v1.14 costume swap timeline: 0-0.32 s old costume under a growing smoke poof (poof swaps only), then the new one: face
+  // bits pop in, the hat drops from above with a springy landing
+  const st = now - pkc.t0, sw = pkc.poof ? 0.32 : 0;
+  const C = COSTUMES[pkc.poof && st < sw && pkc.prev >= 0 ? pkc.prev : pkc.cur];
+  const dk = clamp((st - sw) / 0.55, 0, 1), drop = st < sw ? 0 : (1 - backOut(dk)) * -1.5 * R, pop = st < sw ? 1 : backOut(clamp((st - sw) / 0.3, 0, 1));
+  const spin = pkc.poof && st < sw + 0.4 ? Math.sin(clamp(st / (sw + 0.4), 0, 1) * Math.PI) * 0.25 : 0;
+  ctx.save(); ctx.translate(p.x, p.y + R * 0.9 - hop);                // pivot near the base so it rocks, not spins
+  ctx.rotate(cur.frot * 0.8 + wob + spin); ctx.scale((1 + sq) * cur.fs, (1 - sq) * cur.fs); ctx.translate(0, -R * 0.9);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const half = R * (0.25 - 0.04 * a + 0.08 * clamp(Math.max(cur.L.happy, cur.R.happy), 0, 1));   // room for ^ ^ arcs
+  const ce = { hx: half, hx0: R * 0.25, y: R * 0.02 };
+  const layer = (k, sc) => { if (!C[k]) return; ctx.save(); if (sc !== 1) { ctx.translate(0, 0.2 * R); ctx.scale(sc, sc); ctx.translate(0, -0.2 * R); } C[k](R, ce); ctx.restore(); };
+  layer('back', pop);
+  if (!C.noStem) {                                                   // stem (its foot hides under the body)
+    ctx.beginPath(); ctx.moveTo(R * 0.03, -R * 0.78); ctx.quadraticCurveTo(R * 0.07, -R * 1.06, -R * 0.1, -R * 1.17);
+    ctx.strokeStyle = PK.stemHi; ctx.lineWidth = R * 0.17; ctx.stroke();
+    ctx.strokeStyle = PK.stem; ctx.lineWidth = R * 0.125; ctx.stroke();
+  }
+  // body: one orange silhouette, round on top, its own bottom edge lobed into 4 soft scallops (creases dip in)
+  pkBodyPath(R); ctx.fillStyle = PK.body; ctx.fill();
+  // subtle darker shading in the creases (and faint rib lines fading upward), clipped to the body
+  ctx.save(); ctx.clip();
+  const g = ctx.createLinearGradient(0, -0.55 * R, 0, 0.95 * R); g.addColorStop(0, 'rgba(160,45,8,0)'); g.addColorStop(0.6, 'rgba(160,45,8,0.1)'); g.addColorStop(1, 'rgba(150,38,6,0.65)');
+  ctx.strokeStyle = g; ctx.lineCap = 'round';
+  for (const u of [-0.5, 0, 0.5]) { const xb = u * 0.98 * R;
+    ctx.lineWidth = R * 0.05; ctx.beginPath(); ctx.moveTo(xb * 0.55, -0.7 * R); ctx.quadraticCurveTo(xb * 1.18, 0.1 * R, xb, 1.0 * R); ctx.stroke(); }
+  const g2 = ctx.createRadialGradient(0, 0.95 * R, 0.1 * R, 0, 0.95 * R, 0.55 * R); g2.addColorStop(0, 'rgba(150,38,6,0.22)'); g2.addColorStop(1, 'rgba(150,38,6,0)');
+  ctx.fillStyle = g2; ctx.fillRect(-1.1 * R, 0.4 * R, 2.2 * R, 0.6 * R);   // gentle darker underside
+  ctx.restore();
+  layer('under', pop);
+  // eyes: dots at rest -> tall pills when active; darts squash them along the motion (always on top of masks / paint)
+  const sp = Math.min(1, Math.hypot(pk.vx, pk.vy) / 14), gz = C.gaze || 1;
+  const lx = clamp(cur.lx + pk.dx * a, -1.3, 1.3) * gz, ly = clamp(cur.ly + pk.dy * a, -1.1, 1.1) * gz;
+  const E = { S: L.S, rot0: -0.12 * a + 0.25 * sp * Math.sign(pk.vx || 1) * Math.sign(pk.vy || 1) * a, col: '#fff', lx, ly,
+              ew: (1 - 0.5 * a) * (1 + 0.18 * sp), eh: (0.52 + 0.1 * a) * (1 - 0.15 * sp), hs: 0.72 };
+  ctx.fillStyle = '#fff'; ctx.strokeStyle = '#fff';
+  drawEye(cur.L, -half, ce.y, -1, bl, E);
+  if (!C.oneEye) { ctx.fillStyle = '#fff'; ctx.strokeStyle = '#fff'; drawEye(cur.R, half, ce.y, 1, bl, E); }
+  layer('over', pop);
+  if (C.hat) { ctx.save(); ctx.translate(0, drop); C.hat(R, ce); ctx.restore(); }
+  // smoke poof (swap) + a few sparkles
+  if (pkc.poof && st < 1.0) {
+    const k = clamp(st / 0.9, 0, 1), al = (st < 0.25 ? st / 0.25 : 1 - ease((st - 0.4) / 0.6)) * 0.92;
+    if (al > 0.01) { ctx.save(); ctx.globalAlpha = al;
+      for (let i = 0; i < 11; i++) { const an = i / 11 * Math.PI * 2 + 0.4, rr = R * (0.55 + 0.45 * k), cr = R * (0.28 + 0.3 * Math.sin(k * Math.PI * 0.8)) * (0.8 + 0.3 * ((i * 7) % 3) / 2);
+        ctx.fillStyle = i % 2 ? '#D9D9DE' : '#BFC0C8'; pkEll(Math.cos(an) * rr, -0.15 * R + Math.sin(an) * rr * 0.85, cr, cr); ctx.fill(); }
+      ctx.fillStyle = '#E3E3E8'; pkEll(0, -0.15 * R, R * (0.5 + 0.4 * Math.sin(k * Math.PI)), R * (0.45 + 0.35 * Math.sin(k * Math.PI))); ctx.fill();
+      ctx.fillStyle = '#FFD84A'; for (let i = 0; i < 5; i++) { const an = i * 1.3 + 0.2; pkStar(Math.cos(an) * R * (0.9 + 0.7 * k), -0.2 * R + Math.sin(an) * R * (0.8 + 0.6 * k), R * 0.07 * (1 - k * 0.5)); }
+      ctx.restore(); }
+  }
+  ctx.restore();
+  // corny caption: small, under the pumpkin, ~3.4 s, never below the wordmark line
+  const ct = now - pkc.capT;
+  if (pkc.cap && ct > 0 && ct < 3.6) {
+    const al = Math.min(1, ct / 0.3) * (1 - clamp((ct - 3.0) / 0.6, 0, 1));
+    const fs = Math.round(2.5 * U), Cb = COSTUMES[pkc.cur];
+    ctx.save(); ctx.font = `600 ${fs}px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(pkc.cap).width, cx = clamp(p.x, tw / 2 + 3 * U, W - tw / 2 - 3 * U);
+    const cy = Math.min(p.y + R * (Cb.bot || 0.95) + 3.2 * U, H - 11.5 * U) - (1 - Math.min(1, ct / 0.3)) * 1.2 * U;
+    ctx.globalAlpha = al * 0.85; ctx.fillStyle = '#FFB27A'; ctx.fillText(pkc.cap, cx, cy); ctx.restore();
+  }
+}
 let lastMinute = -1, dateStrMin = -1, dateStr = '';
 function drawClock(L, bl) {
   const d = new Date(), h24 = Q.get('clock24') === '1';
@@ -1355,7 +2159,7 @@ function drawClock(L, bl) {
 }
 
 function draw(bl) {
-  const L = lay = layout();
+  const L = lay = rps.on ? rpsLayout() : layout();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
   ctx.save();
@@ -1368,6 +2172,7 @@ function draw(bl) {
     ctx.fillStyle = L.bg; ctx.beginPath(); ctx.arc(0, -b.R, b.R, 0, Math.PI * 2); ctx.fill(); ctx.restore();
   }
   if (advShow) drawAdventure();
+  else if (L.theme === 'rps') drawRps(L, bl);
   else if (L.theme === 'pong') drawPong(L, bl);
   else if (L.theme === 'chess') drawChess(L.off || 0);
   else if (L.theme === 'checkers') drawCheckers(L.off || 0);
@@ -1375,6 +2180,7 @@ function draw(bl) {
   else if (L.theme === 'news') drawNewsLook(L.off || 0);
   else if (L.theme === 'harness') drawHarnessLook(L.off || 0);
   else if (L.theme === 'chars') drawChars(L, bl);
+  else if (L.theme === 'pumpkin') drawPumpkin(L, bl);
   else if (L.theme === 'clock') drawClock(L, bl);
   else {
   ctx.fillStyle = L.col; ctx.strokeStyle = L.col;
@@ -1410,10 +2216,12 @@ function draw(bl) {
     ctx.globalAlpha = L.blob ? 0.35 : 0.28; ctx.fillStyle = fg; ctx.fillText('Grok Bot', x0 + r * 2 + gap, my + fs * 0.04);
     ctx.globalAlpha = 1;
   }
+  drawRpsInvite();                                                   // v1.12
+  drawFistHold(L);                                                   // v1.12.1: "I see your fist" progress ring
   // drawSweat(L);  // removed 2026-10-11: read as crying
   ctx.restore();
   if (advDim > 0.001) { ctx.globalAlpha = advDim; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; }   // adventure dip-to-black
-  drawUsage(L);
+  drawThermo(dtFrame);                                               // v1.11 (replaces the small drawUsage meter)
   drawMiniClock(L, dtFrame);
   drawNewsOverlays();                                                // v1.9: ticker, THIS JUST IN, summary card (always on top)
   if (debug) drawDebug();
@@ -2291,7 +3099,7 @@ function advTap() { if (adv && !adv.stopAt && now - adv.start > 1) { advStop(); 
 function advUpdate() {
   if (!adv) {
     if (ADV_ON && now > advNextAt) {
-      const busy = trans || sleeping || touch || now - lastInput < ADV.idleSec || pres.talking || (move && /^(wakeword|launch|greet|back|shrug)$/.test(move.name));
+      const busy = trans || sleeping || touch || rps.on || now - lastInput < ADV.idleSec || pres.talking || (move && /^(wakeword|launch|greet|back|shrug)$/.test(move.name));
       if (!busy || (advForce && !trans)) { advStart(advForce); advForce = null; } else advNextAt = now + 5;
     }
   }
@@ -2965,7 +3773,7 @@ function momentTick(here, seated, justSat) {
   if (quietHours()) { momentSchedule(); mo.pending = false; return; }
   if (!seated) { mo.pending = true; mo.next = now + 30; return; }     // nobody at the desk: hold
   if (now - (bk.lastBreak || -1e9) < NEWS.momentAfterBreakSec) { mo.next = (bk.lastBreak || 0) + NEWS.momentAfterBreakSec + 1; return; }
-  if (card.open || (hold && !hold.fired) || touch || trans || bkQueue.length) { mo.next = now + 5; return; }
+  if (card.open || (hold && !hold.fired) || touch || trans || bkQueue.length || rps.on || now - rps.invite < RPS.inviteSec) { mo.next = now + 5; return; }
   const p = momentPick(); if (!p.length) { momentSchedule(); return; }
   bkStart(p, 'cadence', 'moment');
 }
@@ -2999,7 +3807,7 @@ function bkTick() {
   if (!bkQueue.length) return;
   if (quietHours()) { for (const q of bkQueue) tickerFront(q.item); bkQueue.length = 0; return; }
   if (!here) { for (const q of bkQueue) { bk.held.push({ item: q.item, wall: Date.now() }); tickerFront(q.item); } bkQueue.length = 0; return; }
-  if (card.open || (hold && !hold.fired) || touch || trans) return;  // never interrupt a press, a card or a swipe
+  if (card.open || (hold && !hold.fired) || touch || trans || rps.on) return;  // never interrupt a press, a card, a swipe or an RPS game
   const brand = bkQueue.some(q => q.item.tag !== 'ai'), replay = bkQueue.some(q => q.replay);
   if (!replay && now - bk.last < (brand ? NEWS.brandCooldownSec : NEWS.cooldownSec)) return;
   bkQueue.sort((a, b) => (b.replay - a.replay) || bkPrio(b.item) - bkPrio(a.item) || b.item.publishedAt - a.item.publishedAt);
@@ -3288,7 +4096,7 @@ function newsExpose() {
     newsRects: nl.rects.map(r => ({ x0: r.x0 / DPR, x1: r.x1 / DPR, y0: r.y0 / DPR, y1: r.y1 / DPR, title: r.item.title })),
     tiles: hb.rects.map(r => ({ x0: r.x0 / DPR, x1: r.x1 / DPR, y0: r.y0 / DPR, y1: r.y1 / DPR, title: r.item.title })),
     btn: bk.btn && { x0: bk.btn.x0 / DPR, x1: bk.btn.x1 / DPR, y0: bk.btn.y0 / DPR, y1: bk.btn.y1 / DPR } }) });
-  G.ROTATE = ROTATE; G.rotatePick = rotatePick; Object.defineProperty(G, 'rot', { get: () => ({ lastKey: rot.lastKey, games: rot.games.slice(), lastGameAt: rot.lastGameAt, next: +(nextThemeAt - now).toFixed(1), picks: rot.picks.slice() }) });
+  G.ROTATE = ROTATE; G.rotatePick = rotatePick; Object.defineProperty(G, 'pk', { get: () => Object.assign({ halloween: HALLOWEEN }, pk) }); G.costumes = COSTUMES.map(c => c.id); Object.defineProperty(G, 'pkPos', { get: () => lay && lay.pk ? { x: lay.pk.x / DPR, y: lay.pk.y / DPR } : null }); G.costume = (id, poof) => { pkc.lastTheme = 'pumpkin'; pkSwap(typeof id === 'string' ? COSTUME_BY_ID[id] : id, !!poof); return COSTUMES[pkc.cur].id; }; Object.defineProperty(G, 'pkc', { get: () => ({ cur: COSTUMES[pkc.cur].id, cap: pkc.cap, next: +(pkc.next - now).toFixed(1), tapAt: pkc.tapAt }) }); G.pkBurst = s => { pk.burstUntil = now + (s || 4); pk.burstNext = pk.burstUntil + 30; }; G.pkCalm = () => { pk.burstUntil = 0; pk.burstNext = now + 1e6; move = null; nextMoveAt = now + 1e6; }; Object.defineProperty(G, 'rot', { get: () => ({ lastKey: rot.lastKey, games: rot.games.slice(), lastGameAt: rot.lastGameAt, next: +(nextThemeAt - now).toFixed(1), picks: rot.picks.slice() }) });
   G.rotSim = n => { const c = {}, k = {}; const saveKey = rot.lastKey, saveG = rot.lastGameAt, saveGames = rot.games.slice(); let lastGame = -1e9, t = 0; for (let i = 0; i < n; i++) { rot.lastGameAt = lastGame - t + now; const L = rotatePick(); const cat = rot.picks[rot.picks.length - 1]; c[cat] = (c[cat] || 0) + 1; if (L.key === rot.lastKey) k.repeat = (k.repeat || 0) + 1; rot.lastKey = L.key; const dw = cat === 'games' ? 240 : 180; if (cat === 'games') { if (t - lastGame < ROTATE.gameGapSec) k.gapViolation = (k.gapViolation || 0) + 1; lastGame = t; rot.games.push(L.theme); if (rot.games.length > 2) rot.games.shift(); } t += dw; } rot.lastKey = saveKey; rot.lastGameAt = saveG; rot.games = saveGames; rot.picks.length = 0; const tot = n; for (const x in c) c[x] = +(100 * c[x] / tot).toFixed(1); return { pct: c, k }; };
   G.newsTest = { set: (k, v) => { if (k === 'last') bk.last = v; if (k === 'armed') newsArmed = v; }, quietHours, someoneHere, pres: st => presSet(st), get front() { return tk.front.slice(); } };
 }
@@ -3349,12 +4157,14 @@ scheduleBlink(0);
 scheduleTheme();
 // small hook for previews/debug: window.grokbot.play('dizzy')
 window.__setChar = i => { theme = 'chars'; cast = [ROSTER[i]]; comps = []; };   // preview/test hook
-window.grokbot = { get pong() { return { phase: pong.phase, a: pong.sides[0].ch && pong.sides[0].ch.name, b: pong.sides[1].ch && pong.sides[1].ch.name, sa: pong.sides[0].score, sb: pong.sides[1].score, rally: pong.rally, speed: pong.speed / (W || 1), bx: pong.bx, by: pong.by, top: pong.top, bot: pong.bot }; }, PONG, get mini() { return { a: mini.a, text: mini.text, side: mini.side, lum: mini.lum }; }, get pres() { return Object.assign({}, pres, { t: now }); }, sim(o) { Object.assign(SENSE, { ready: true }, o); }, PRES, swipeTo, get look() { return currentLook(); }, get gaugeRect() { return gaugeRect; }, fetchUsage, get usage() { return usage; }, get nervous() { return nervous(); }, pickCast, get cast() { return cast.map(c => c.name); }, play, sleep: fallAsleep, wake: wakeUp, moves: RANDOM_MOVES, switchTheme, get theme() { return theme; }, app: APP,
+window.grokbot = { get pong() { return { phase: pong.phase, a: pong.sides[0].ch && pong.sides[0].ch.name, b: pong.sides[1].ch && pong.sides[1].ch.name, sa: pong.sides[0].score, sb: pong.sides[1].score, rally: pong.rally, speed: pong.speed / (W || 1), bx: pong.bx, by: pong.by, top: pong.top, bot: pong.bot }; }, PONG, get mini() { return { a: mini.a, text: mini.text, side: mini.side, lum: mini.lum }; }, get pres() { return Object.assign({}, pres, { t: now }); }, sim(o) { Object.assign(SENSE, { ready: true }, o); }, PRES, swipeTo, get look() { return currentLook(); }, get gaugeRect() { return gaugeRect; }, get thermo() { return thermo.rect; }, setUsage(d) { if (!num(d.pct)) d.pct = d.spentUsd / d.limitUsd * 100; usage = d; usageFetchedAt = Date.now(); }, fetchUsage, get usage() { return usage; }, get nervous() { return nervous(); }, get relaxed() { return relaxed(); }, get pace() { const p = usagePace(); return p && Object.assign({ label: p.over ? hitLabel(p) : 'on pace' }, p); }, worry: () => { worryNext = now; wobbleNext = now + 0.4; }, calm: () => { move = null; nextMoveAt = now + 30; }, pickCast, get cast() { return cast.map(c => c.name); }, play, sleep: fallAsleep, wake: wakeUp, moves: RANDOM_MOVES, switchTheme, get theme() { return theme; }, app: APP,
   sense: SENSE, toggleDebug: () => { debug = !debug; return debug; },
   openGrokBot, get markRect() { return markRect && { x: markRect.x / DPR, y: markRect.y / DPR, hw: markRect.hw / DPR, hh: markRect.hh / DPR }; },
   get state() { return { lx: cur.lx, hold: !!hold, w: cur.L.w, h: cur.L.h, ly: cur.ly, frot: cur.frot, move: move && move.name, sleeping, engaged: engaged() }; } };
 v16Expose();
 newsExpose();
+rpsExpose(window.grokbot);
+if (Q.get('rps') === '1') setTimeout(() => rpsStart('debug'), +Q.get('rpsDelay') || 1500);
 // Camera/mic sensing only in the app (or ?sense=1 on a secure http(s) origin). Any failure = silent v1.0 behaviour.
 const SENSE_ON = APP || Q.get('sense') === '1';
 let senseWanted = SENSE_ON;

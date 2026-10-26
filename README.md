@@ -28,7 +28,9 @@ A fullscreen animated face and screensaver for the Google Pixel Tablet.
 - 🏓 **Games it plays against itself:** Pong around the clock, chess, checkers, Pac-Man.
 - 🎭 **A cast of characters,** plus little *adventures*: building towers, coding, writing the newsletter, dreaming, multiplying into 16 bots, tug of war.
 - 📰 **AI news moments.** Calm center-screen headlines with short summaries, plus a "THIS JUST IN" takeover when a coding agent ships a release.
-- 📊 **Plan-usage meter.** A small gauge for your Cursor spend versus your limit.
+- 🌡️ **Plan-usage thermostat.** A slim gauge on the right edge for your Cursor spend versus your limit, with an end-of-cycle pace forecast. The face gets a little nervous when you're on pace to overspend.
+- ✊ **Rock-paper-scissors.** Tap the little clock (or hold up a fist) and play a best-of-three against the bot with real hand gestures, read on the device.
+- 🎃 **Halloween pumpkin with costumes.** An orange Grok Bot pumpkin that wobbles, plus 10 corny costumes. See below.
 - 🔌 **Offline by default.** Build without a feed URL and the app doesn't even get the INTERNET permission.
 
 ## 🖼️ Gallery
@@ -67,6 +69,29 @@ A fullscreen animated face and screensaver for the Google Pixel Tablet.
 </table>
 
 <sub>Screenshots are rendered from <code>index.html</code> in headless Chrome with a mock feed. Headlines, versions and the $120/$300 meter are sample data.</sub>
+
+## 🎃 Pumpkin & costumes
+
+<div align="center">
+<img src="docs/media/pumpkin-costumes.gif" alt="The Grok Bot pumpkin swapping costumes in a puff of smoke and wobbling" width="500">
+</div>
+
+The pumpkin is a flat orange Grok Bot with a lobed bottom and a curly stem. At rest its eyes are round dots. When it gets lively (a tap, a greeting, music, the wake word, or a little typing burst) they stretch into pills that dart around, and the whole pumpkin rocks from its base.
+
+It also dresses up: **witch, Dracula, Groucho glasses, pirate, Frankenstein, mummy, ghost, wizard, devil and skeleton**, plus a plain pumpkin now and then. Every costume is drawn as flat canvas shapes layered over the pumpkin. Masks have eye holes, glasses sit around the eyes, the pirate's patch covers one eye, and costumes rock along with the pumpkin. It changes costume every 2–4 minutes in a puff of smoke, or when you tap it. Each change shows a pun for a few seconds, like *"Fangs for visiting!"* and *"Gourd to the bone"*.
+
+Oct 25 – Nov 1 the pumpkin is the opening look and comes up often. In October it's part of auto-rotation. The rest of the year it's a swipe away. `?halloween=1` forces Halloween mode for testing, and `?theme=pumpkin` jumps straight to it.
+
+<table>
+<tr>
+<td width="50%"><img src="docs/media/look-pumpkin-witch.png" alt="Pumpkin in a witch hat with a warty green nose"><br><sub>🧙 <b>Witch</b>: "Witch way to the candy?"</sub></td>
+<td width="50%"><img src="docs/media/look-pumpkin-ghost.png" alt="Pumpkin under a bedsheet ghost costume"><br><sub>👻 <b>Ghost</b>: "Boo-tiful night, isn't it?"</sub></td>
+</tr>
+</table>
+
+<img src="docs/media/costumes-sheet.png" alt="Contact sheet of all pumpkin costumes">
+
+<sub>The meter shows sample data ($120 of $300).</sub>
 
 ## 🚀 Quick start
 
@@ -129,7 +154,8 @@ sense/            on-device camera + mic sensing (MediaPipe face/gesture, audio 
 android/          Gradle-less build.sh, manifest, Java host (WebView, screensaver, mic, wake word)
 usage-feed/       Cloudflare Worker: usage.json, news.json, harness.json
 scripts/setup.sh  doctor / config / deploy / build / install / verify
-tests/            headless Playwright checks
+tests/            headless Playwright checks and preview renderers
+CHANGELOG.md      what changed, version by version
 docs/media/       the pictures above
 ```
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 David Winter
-// Grok Bot Face v1.4 - on-device camera + mic sensing.
+// Grok Bot Face v1.4 (+v1.12 RPS hand boost, v1.12.1 presence-gated hand watch) - on-device camera + mic sensing.
 // Privacy: frames and audio are only analysed in memory, frame by frame.
 // Nothing is recorded, stored, or sent anywhere (the page CSP and the app's
 // request interceptor also block every non-local request).
@@ -12,7 +12,8 @@ export function init(S) {
   Object.assign(S, {
     ready: true, wanted: false, cam: false, mic: false, delegate: '', err: '', fps: 0,
     faces: [], smile: 0, jaw: 0, roll: 0, blinkL: 0, blinkL2: 0, blinkR: 0,
-    gesture: '', gestureScore: 0, hand: null, waveAt: 0,
+    gesture: '', gestureScore: 0, hand: null, waveAt: 0, fingerMask: 0, handSeq: 0, handAt: -9, handsBoost: false, faceAt: -9,
+    handStats: { runs: 0, found: 0, labels: {} },
     micRms: 0, micFloor: 0.002, micEnvS: 0, micEnvF: 0, loud: false, clapAt: 0,
     beat: false, bpm: 0, beatAt: 0, beatSeq: 0, clapSeq: 0, waveSeq: 0,
     wakeSeq: 0, wakeEngine: '', wakePartial: '', wakeLast: '', wakeConf: 0, micNative: false,
@@ -132,6 +133,12 @@ export function init(S) {
   // ---------------- camera ----------------
   const waveHist = [];
   let handSeenAt = -9, lumCtx = null;
+  // v1.12.1: the hand model runs ~every 2nd camera frame (~5 fps) while someone has been seen in the last 8 s,
+  // every frame while a hand is in view or a game / fist hold is on, and not at all when nobody is around.
+  // (v1.12 ran it on every 3rd frame regardless of presence.)
+  const HAND_PRESENT_SEC = 8;
+  // v1.12.2: a hand parked in view with no face around no longer keeps the hand model at full rate
+  const wantHands = now => !!S.handsBoost || (now - S.faceAt < HAND_PRESENT_SEC && (now - handSeenAt < 1.2 || tick % 2 === 0));
   let frames = 0, fpsT = 0, sentAt = 0;
   S.detMs = 0; S.mainBlockMs = 0;
   // One Euro filter (Casiez et al.): steady when still, responsive when moving -> no gaze jitter.
@@ -162,7 +169,7 @@ export function init(S) {
         createImageBitmap(video).then(bmp => {
           if (!worker || !stream) { bmp.close(); workerBusy = false; return; }
           const now = T();
-          worker.postMessage({ type: 'frame', bmp, ts: performance.now(), hands: now - handSeenAt < 1.2 || tick % 3 === 0, lum: tick % 4 === 0 }, [bmp]);
+          worker.postMessage({ type: 'frame', bmp, ts: performance.now(), hands: wantHands(now), lum: tick % 4 === 0 }, [bmp]);
         }).catch(e => { workerBusy = false; S.err = 'bitmap: ' + (e && e.message || e); camTimer = setTimeout(run, 200); });
         S.mainBlockMs = performance.now() - t0;
         return;                             // next frame is scheduled when the result comes back
@@ -201,12 +208,14 @@ export function init(S) {
         roll: Math.atan2(b.y - a.y, b.x - a.x) });
     });
     let hand;
-    if (gestRec && (T() - handSeenAt < 1.2 || tick % 3 === 0)) {
+    if (gestRec && wantHands(T())) {
       const g = gestRec.recognizeForVideo(video, ts + 0.5);
       if (g.landmarks && g.landmarks.length) {
         const lm = g.landmarks[0], top = g.gestures && g.gestures[0] && g.gestures[0][0];
+        let bx0 = 1, by0 = 1, bx1 = 0, by1 = 0; for (const p of lm) { if (p.x < bx0) bx0 = p.x; if (p.x > bx1) bx1 = p.x; if (p.y < by0) by0 = p.y; if (p.y > by1) by1 = p.y; }
+        const hd = g.handedness && g.handedness[0] && g.handedness[0][0];
         const gesture = top ? top.categoryName : '';
-        hand = { x: lm[9].x, y: lm[9].y, gesture, score: top ? top.score : 0, open: gesture === 'Open_Palm' || fingersOpen(lm) >= 3 };
+        hand = { x: lm[9].x, y: lm[9].y, bw: bx1 - bx0, bh: by1 - by0, bcx: (bx0 + bx1) / 2, bcy: (by0 + by1) / 2, conf: hd ? hd.score : 0, gesture, score: top ? top.score : 0, open: gesture === 'Open_Palm' || fingersOpen(lm) >= 3, mask: fingerMask(lm) };
       } else hand = null;
     }
     let bright;
@@ -241,17 +250,18 @@ export function init(S) {
     });
     tracks = next;
     if (faces.length) {
-      const f = faces[0];
+      const f = faces[0]; S.faceAt = now;
       S.smile = f.smile; S.jaw = f.jaw; S.blinkL = f.blinkL; S.blinkR = f.blinkR; S.squint = f.squint;
       S.roll = rollF(f.roll, now);                   // image coords (unmirrored)
     } else { S.smile = S.jaw = S.blinkL = S.blinkR = 0; S.roll = 0; }
 
     if (raw.hand !== undefined) {
-      const h = raw.hand;
+      const h = raw.hand, hs = S.handStats;
+      hs.runs++; if (h) { hs.found++; const k = h.gesture || 'none'; hs.labels[k] = (hs.labels[k] || 0) + 1; }
       if (h) {
-        S.gesture = h.gesture; S.gestureScore = h.score; S.hand = { x: h.x, y: h.y }; handSeenAt = now;
+        S.gesture = h.gesture; S.gestureScore = h.score; S.hand = { x: h.x, y: h.y, open: !!h.open, bw: h.bw || 0, bh: h.bh || 0, bcx: h.bcx == null ? h.x : h.bcx, bcy: h.bcy == null ? h.y : h.bcy, conf: h.conf || 0 }; S.fingerMask = h.mask || 0; S.handAt = now; S.handSeq = (S.handSeq || 0) + 1; handSeenAt = now;
         waveHist.push({ t: now, x: h.x, open: h.open });
-      } else { S.gesture = ''; S.gestureScore = 0; S.hand = null; }
+      } else { S.gesture = ''; S.gestureScore = 0; S.hand = null; S.fingerMask = 0; S.handSeq = (S.handSeq || 0) + 1; }
       while (waveHist.length && now - waveHist[0].t > 2.0) waveHist.shift();
       if (detectWave()) { S.waveAt = now; S.waveSeq++; waveHist.length = 0; }
     }
@@ -266,6 +276,12 @@ export function init(S) {
     let n = 0;
     for (const [tip, pip] of [[8, 6], [12, 10], [16, 14], [20, 18]]) if (d(lm[tip], lm[0]) > d(lm[pip], lm[0]) * 1.1) n++;
     return n;
+  }
+  function fingerMask(lm) {
+    const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+    let m = 0;
+    [[8, 6], [12, 10], [16, 14], [20, 18]].forEach(([tip, pip], i) => { if (d(lm[tip], lm[0]) > d(lm[pip], lm[0]) * 1.1) m |= 1 << i; });
+    return m;
   }
   S._detectWave = (hist) => { waveHist.length = 0; waveHist.push(...hist); return detectWave(); };   // for tests
 
