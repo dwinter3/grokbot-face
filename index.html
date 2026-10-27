@@ -13,10 +13,10 @@
   html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden;
     cursor:none;touch-action:none;overscroll-behavior:none;
     -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
-  canvas{position:fixed;top:0;left:0;height:100vh;display:block;background:#000}
-  #c{width:calc(100vw - var(--gw, 0px))}
-  /* v1.11 thermostat burndown gauge docked on the right; the face canvas gets the rest of the width */
-  #g{right:0;left:auto;width:var(--gw, 0px);display:none}
+  canvas{position:fixed;top:0;left:0;display:block;background:#000}
+  #c{width:100vw;height:calc(100vh - var(--gh, 0px))}
+  /* v1.17 burn chart is a slim strip along the bottom; the face canvas gets everything above it */
+  #g{top:auto;bottom:0;width:100vw;height:var(--gh, 0px);display:none}
 </style>
 </head>
 <body>
@@ -30,8 +30,8 @@ let ctx = cv.getContext('2d', { alpha: false });   // (let: v1.12 RPS hand borro
 let W = 0, H = 0, DPR = 1, U = 1; // U = 1vmin in device px
 const gv = document.getElementById('g');
 const gctx = gv.getContext('2d', { alpha: false });
-let thermoOn = false, TGW = 0, TGH = 0, gwCss = 0;                  // v1.11 gauge strip (device px)
-const thermo = { shown: -1, key: '', flash: -1e9, lastPct: null, levelY: 0, a: 0.7, rect: null };
+let thermoOn = false, TGW = 0, TGH = 0, ghCss = 0;                  // v1.17 bottom burn strip (device px)
+const thermo = { shown: -1, key: '', flash: -1e9, lastPct: null, lookX: 0, a: 0.7, rect: null };
 
 // Eye geometry in vmin (matches billboard proportions)
 const EW = 12.5, EH = 25, SEP = 17;
@@ -42,13 +42,13 @@ const EW = 12.5, EH = 25, SEP = 17;
 const RS_MAX = +(new URLSearchParams(location.search).get('rs')) || 1.3;
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, RS_MAX, 3);
-  // v1.11: ~11.5% of the width (min 72 / max 300 CSS px) goes to the thermostat gauge on the right
-  gwCss = thermoOn ? Math.round(Math.max(72, Math.min(300, innerWidth * 0.115))) : 0;
-  document.documentElement.style.setProperty('--gw', gwCss + 'px');
+  // v1.17: ~14% of the height (min 84 / max 160 CSS px) goes to the burn-chart strip along the bottom
+  ghCss = thermoOn ? Math.round(Math.max(84, Math.min(160, innerHeight * 0.14))) : 0;
+  document.documentElement.style.setProperty('--gh', ghCss + 'px');
   gv.style.display = thermoOn ? 'block' : 'none';
-  W = Math.round((innerWidth - gwCss) * DPR); H = Math.round(innerHeight * DPR);
+  W = Math.round(innerWidth * DPR); H = Math.round((innerHeight - ghCss) * DPR);
   cv.width = W; cv.height = H;
-  TGW = Math.round(gwCss * DPR); TGH = H;
+  TGW = W; TGH = Math.round(ghCss * DPR);
   if (thermoOn) { gv.width = Math.max(1, TGW); gv.height = Math.max(1, TGH); }
   thermo.key = '';
   U = Math.min(W, H) / 100;
@@ -648,13 +648,13 @@ function usageApply(s) {                                           // personalit
     if (now < worryGlanceUntil) { s.noBlink = true; s.L.h *= 1.06; s.R.h *= 1.06; }   // eyes stay open (a little wide) while glancing
     const wt = now - wobbleAt;                                     // a small nervous tremble, ~0.7 s
     if (wt < 0.7) { const k = Math.sin(wt / 0.7 * Math.PI) * nv; s.frot += 0.04 * Math.sin(wt * 40) * k; s.fx += 0.6 * Math.sin(wt * 33) * k; s.L.h *= 1 - 0.04 * k; s.R.h *= 1 - 0.04 * k; }
-    if (thermoOn && now > worryNext) {                             // occasional side-glance at the gauge (off to the right)
-      if (worryNext) { lookOverride = { x: W + TGW * 0.5, y: thermo.levelY || H / 2, until: now + 1.3 }; worryGlanceUntil = now + 1.3; }
+    if (thermoOn && now > worryNext) {                             // occasional glance down at the burn strip
+      if (worryNext) { lookOverride = { x: thermo.lookX || W * 0.6, y: H + TGH * 0.5, until: now + 1.3 }; worryGlanceUntil = now + 1.3; }
       worryNext = now + rnd(16, 34) * (1.35 - 0.45 * nv);
     }
   } else if (rx) {
     if (thermoOn && now > worryNext) {                             // now and then a content little look at the gauge
-      if (worryNext) { lookOverride = { x: W + TGW * 0.5, y: thermo.levelY || H / 2, until: now + 1.1 }; calmGlanceUntil = now + 1.1; }
+      if (worryNext) { lookOverride = { x: thermo.lookX || W * 0.6, y: H + TGH * 0.5, until: now + 1.1 }; calmGlanceUntil = now + 1.1; }
       worryNext = now + rnd(45, 90);
     }
     if (now < calmGlanceUntil) { const k = bump(1.1 - (calmGlanceUntil - now), 0.15, 0.35, 0.85, 1.1) * rx; s.L.happy = Math.max(s.L.happy, 0.8 * k); s.R.happy = Math.max(s.R.happy, 0.8 * k); s.noBlink = true; }
@@ -692,7 +692,7 @@ function drawUsage(L) {
   gaugeRect = { x: x + r * 3, y, hw: Math.max(r * 5, 60 * DPR), hh: Math.max(r * 1.6, 36 * DPR) };
 }
 
-// ---------- v1.11: thermostat-style burndown gauge, docked right, full height ----------
+// ---------- v1.11 burndown gauge -> v1.17: slim horizontal burn strip along the bottom edge ----------
 // Remaining quota drains downward (full at cycle start). Own canvas, repainted only when something
 // visible changes (value easing, 1-2 px anti-burn-in drift, brightness), so it costs ~nothing per frame.
 // Low-burn: thin outlines, dim at rest, dimmer when nobody is around / asleep, brief brighten on change or tap.
@@ -744,110 +744,106 @@ function drawThermo(dt) {
   const key = [tick, thermo.shown.toFixed(2), (thermo.a * (1 - advDim)).toFixed(3), has ? usage.spentUsd + '/' + usage.limitUsd + '/' + usage.daysLeft + '/' + usage.projectedUsd + '/' + thermoHitKey() + '/' + burnKey() : '-', stale, TGW, TGH].join('|');
   if (key === thermo.key) return;
   thermo.key = key;
-  const c = gctx, w = TGW, h = TGH, p = thermo.shown, liq = thermoLiquid(p), T = tick / fps;
+  const c = gctx, w = TGW, h = TGH, p = thermo.shown;
   const dim = 1 - 0.6 * advDim, A = thermo.a * dim;
   c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1; c.fillStyle = '#000'; c.fillRect(0, 0, w, h);
-  c.translate(dx, dy); c.textAlign = 'center'; c.textBaseline = 'middle';
-  const maxW = w * 0.9, left = has ? usage.limitUsd - usage.spentUsd : 0;
-  // ---- readout: big $ left, % used, then $ used / limit and days left ----
-  c.globalAlpha = A; c.fillStyle = '#fff';
-  const big = has ? (left >= 0 ? `$${Math.round(left)}` : `-$${Math.round(-left)}`) : '--';
-  fitFont(c, big, 800, w * 0.34, maxW); c.fillText(big, w / 2, h * 0.052);
-  c.fillStyle = 'rgba(255,255,255,0.6)'; fitFont(c, left >= 0 ? 'left' : 'over', 600, w * 0.11, maxW); c.fillText(left >= 0 ? 'left' : 'over', w / 2, h * 0.093);
-  { const pc0 = has ? usagePace() : null; c.fillStyle = has ? thermoColor(Math.max(p, pc0 ? pc0.ratio * 100 : 0)) : '#666'; }
-  const pl = has ? Math.round(p) + '% used' : 'no data';
-  fitFont(c, pl, 700, w * 0.15, maxW); c.fillText(pl, w / 2, h * 0.128);
-  if (has) {
-    c.fillStyle = 'rgba(255,255,255,0.5)'; const l2 = `$${Math.round(usage.spentUsd)} / $${Math.round(usage.limitUsd)}`;
-    fitFont(c, l2, 500, w * 0.105, maxW); c.fillText(l2, w / 2, h * 0.158);
-    const bn0 = usageBurn();
-    if (num(usage.daysLeft)) { const l3 = `${Math.max(0, Math.round(usage.daysLeft))}d left` + (bn0 ? ` · $${bn0.rate < 10 ? bn0.rate.toFixed(1) : Math.round(bn0.rate)}/d` : ''); fitFont(c, l3, 500, w * 0.105, maxW); c.fillText(l3, w / 2, h * 0.183); }
-  }
-  // ---- v1.16 transposed burn chart (same strip): time runs UP (day 1 at the bottom, month end at the top), $/day runs right.
-  // Lines: daily actuals (solid + dots), rolling 10-day average (smooth), dashed forecast at the 10-day rate to month end,
-  // faint dotted "limit pace" = the $/day that lands exactly on the limit. Outlier days are clipped at the axis cap and marked.
+  c.translate(dx, dy); c.textBaseline = 'middle';
+  // ---- v1.17 bottom strip: [readout] [horizontal burn chart: days left->right, $/day up] [legend + projection] ----
   const lim = has ? usage.limitUsd : 0, pc = has ? usagePace() : null, over = !!(pc && pc.over);
   const fPct = pc ? pc.ratio * 100 : p, stat = thermoColor(Math.max(p, fPct));
-  const bn = has ? usageBurn() : null;
-  const top = h * 0.245, bot = h * 0.895, len = bot - top, px0 = w * 0.24, px1 = w * 0.9, pw = px1 - px0;
+  const bn = has ? usageBurn() : null, left = has ? usage.limitUsd - usage.spentUsd : 0;
   const C_DAY = '#22D3EE', C_AVG = '#E879F9', C_NEED = '#4ADE80', C_FC = over ? '#EE5257' : fPct > 90 ? stat : '#F1F5F9';   // white on pace, amber near the limit, red over
-  const fs = w * 0.062, lw = Math.max(1.5, 1.25 * DPR);
-  // legend (two short colour-coded rows under the header)
-  c.globalAlpha = A; c.textBaseline = 'middle';
-  { const ly = h * 0.207, ly2 = h * 0.223, sw = w * 0.08, put = (x, y, col, dash, label) => {
-      c.strokeStyle = col; c.lineWidth = lw; c.setLineDash(dash); c.beginPath(); c.moveTo(x, y); c.lineTo(x + sw, y); c.stroke(); c.setLineDash([]);
-      c.fillStyle = 'rgba(255,255,255,0.55)'; c.textAlign = 'left'; c.font = `500 ${fs}px ${FONT_T}`; c.fillText(label, x + sw + w * 0.025, y); };
-    put(w * 0.06, ly, C_DAY, [], 'daily'); put(w * 0.5, ly, C_AVG, [], '10d avg');
-    put(w * 0.06, ly2, C_FC, [3 * DPR, 2.5 * DPR], 'forecast'); if (bn && lim) put(w * 0.5, ly2, C_NEED, [1 * DPR, 2.5 * DPR], 'limit pace'); }
+  const fs = h * 0.1, lw = Math.max(1.5, 1.25 * DPR);
+  c.globalAlpha = A;
+  { const g = c.createLinearGradient(0, 0, w, 0); g.addColorStop(0, 'rgba(34,211,238,0)'); g.addColorStop(0.3, 'rgba(34,211,238,0.35)'); g.addColorStop(0.7, 'rgba(232,121,249,0.35)'); g.addColorStop(1, 'rgba(232,121,249,0)');
+    c.fillStyle = g; c.fillRect(0, h * 0.02, w, Math.max(1, DPR)); }                    // faint colour hairline separating strip from face
+  // ---- readout (left) ----
+  const lx = w * 0.075, lmax = w * 0.125;
+  c.textAlign = 'center'; c.fillStyle = '#fff';
+  const big = has ? (left >= 0 ? `$${Math.round(left)} left` : `-$${Math.round(-left)} over`) : '--';
+  fitFont(c, big, 800, h * 0.24, lmax); c.fillText(big, lx, h * 0.24);
+  c.fillStyle = has ? stat : '#666'; const pl = has ? Math.round(p) + '% used' : 'no data';
+  fitFont(c, pl, 700, h * 0.15, lmax); c.fillText(pl, lx, h * 0.47);
+  if (has) {
+    c.fillStyle = 'rgba(255,255,255,0.55)'; const l2 = `$${Math.round(usage.spentUsd)} / $${Math.round(usage.limitUsd)}`;
+    fitFont(c, l2, 500, h * 0.115, lmax); c.fillText(l2, lx, h * 0.66);
+    if (num(usage.daysLeft)) { const l3 = `${Math.max(0, Math.round(usage.daysLeft))}d left` + (bn ? ` · $${bn.rate < 10 ? bn.rate.toFixed(1) : Math.round(bn.rate)}/d` : ''); fitFont(c, l3, 500, h * 0.115, lmax); c.fillText(l3, lx, h * 0.83); }
+  }
+  // ---- chart (middle) ----
+  const px0 = w * 0.19, px1 = w * 0.785, pw = px1 - px0, top = h * 0.17, bot = h * 0.74, ph2 = bot - top, ylab = h * 0.88;
+  thermo.lookX = (px0 + px1) / 2;
   if (has && bn) {
-    const N = bn.nDays, yT = t => bot - t / N * len;
+    const N = bn.nDays, xD = t => px0 + t / N * pw;
     const base = Math.max(bn.rate, ...bn.roll), rawMax = Math.max(base * 1.5, bn.need <= base * 2 ? bn.need * 1.15 : 0), sorted = bn.days.slice(0, bn.today + 1).sort((a, b) => a - b), p85 = sorted[Math.floor((sorted.length - 1) * 0.85)] || 0;
     const nice = v => { const st = [10, 20, 25, 40, 50, 60, 80, 100, 150, 200, 250, 300, 400, 500, 750, 1000, 1500, 2000]; return st.find(x => x >= v) || Math.ceil(v / 1000) * 1000; };
-    const xmax = nice(Math.max(rawMax, p85, 5)), xX = v => px0 + clamp(v / xmax, 0, 1) * pw;
-    // plot frame: future rows faintly shaded, grid at 0 / half / cap
-    const yNow = yT(bn.elapsed);
-    c.fillStyle = 'rgba(255,255,255,0.035)'; c.fillRect(px0, top, pw, yNow - top);
-    for (const f of [0, 0.5, 1]) { c.fillStyle = f ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.3)'; c.fillRect(px0 + f * pw - DPR * 0.5, top, Math.max(1, DPR), len); }
-    c.fillStyle = 'rgba(255,255,255,0.45)'; c.textAlign = 'center'; c.font = `500 ${fs}px ${FONT_T}`;
-    c.fillText('$0', px0, bot + h * 0.013); c.fillText(fmtUsd(xmax / 2), px0 + pw / 2, bot + h * 0.013); c.fillText(fmtUsd(xmax) + '/d', px1 - w * 0.02, bot + h * 0.013);
-    // day labels on the left (1, 8, 15, 22, 29) and a faint 'today' line
+    const ymax = nice(Math.max(rawMax, p85, 5)), yV = v => bot - clamp(v / ymax, 0, 1) * ph2;
+    const xNow = xD(bn.elapsed); thermo.lookX = xNow;
+    // frame: future columns faintly shaded, grid at 0 / half / cap with $ labels on the left
+    c.fillStyle = 'rgba(255,255,255,0.04)'; c.fillRect(xNow, top, px1 - xNow, ph2);
+    c.font = `500 ${fs}px ${FONT_T}`; c.textAlign = 'right';
+    for (const f of [0, 0.5, 1]) { const yy = bot - f * ph2; c.fillStyle = f ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.3)'; c.fillRect(px0, yy - DPR * 0.5, pw, Math.max(1, DPR));
+      c.fillStyle = 'rgba(255,255,255,0.45)'; c.fillText(f === 0 ? '$0' : f === 1 ? fmtUsd(ymax) + '/d' : fmtUsd(ymax / 2), px0 - w * 0.006, yy); }
+    // day labels along the bottom (Oct 1, 8, 15, 22, 29, end) + 'today'; labels too close to 'today' step aside
     const cs0 = new Date(usage.cycleStart), mon = cs0.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' });
-    c.textAlign = 'right';
-    for (const d of [1, 8, 15, 22, 29]) { if (d > N) continue; const yy = yT(d - 0.5); c.fillStyle = 'rgba(255,255,255,0.18)'; c.fillRect(px0 - w * 0.03, yy - 0.5 * DPR, w * 0.03, Math.max(1, DPR));
-      c.fillStyle = 'rgba(255,255,255,0.45)'; c.fillText(d === 1 ? `${mon} 1` : String(new Date(cs0.getTime() + (d - 1) * DAY_MS).getUTCDate()), px0 - w * 0.045, yy); }
-    c.fillStyle = 'rgba(255,255,255,0.3)'; c.fillText('end', px0 - w * 0.045, top);
-    c.setLineDash([2 * DPR, 3 * DPR]); c.strokeStyle = 'rgba(255,255,255,0.35)'; c.lineWidth = Math.max(1, DPR); c.beginPath(); c.moveTo(px0 - w * 0.03, yNow); c.lineTo(px1, yNow); c.stroke(); c.setLineDash([]);
-    c.fillStyle = 'rgba(255,255,255,0.6)'; c.font = `600 ${fs}px ${FONT_T}`; c.fillText('today', px0 - w * 0.045, yNow - fs * 0.9);
-    // (4) limit pace: from today to month end
-    const needOff = bn.need > xmax;                                  // limit pace off the axis: edge arrow + label only
-    if (bn.need > 0 && !needOff) { c.setLineDash([1 * DPR, 2.5 * DPR]); c.strokeStyle = cA(C_NEED, 0.75); c.lineWidth = lw; c.beginPath(); c.moveTo(xX(bn.need), yNow); c.lineTo(xX(bn.need), top); c.stroke(); c.setLineDash([]); }
+    c.textAlign = 'center'; c.font = `500 ${fs}px ${FONT_T}`;
+    const near = x => Math.abs(x - xNow) < w * 0.03;
+    for (const d of [1, 8, 15, 22, 29]) { if (d > N) continue; const xx = xD(d - 0.5); c.fillStyle = 'rgba(255,255,255,0.18)'; c.fillRect(xx - 0.5 * DPR, bot, Math.max(1, DPR), h * 0.04);
+      if (near(xx)) continue; c.fillStyle = 'rgba(255,255,255,0.45)'; c.fillText(d === 1 ? `${mon} 1` : String(new Date(cs0.getTime() + (d - 1) * DAY_MS).getUTCDate()), xx, ylab); }
+    if (!near(px1)) { c.fillStyle = 'rgba(255,255,255,0.3)'; c.fillText('end', px1, ylab); }
+    c.setLineDash([2 * DPR, 3 * DPR]); c.strokeStyle = 'rgba(255,255,255,0.35)'; c.lineWidth = Math.max(1, DPR); c.beginPath(); c.moveTo(xNow, top); c.lineTo(xNow, bot + h * 0.04); c.stroke(); c.setLineDash([]);
+    c.fillStyle = 'rgba(255,255,255,0.7)'; c.font = `600 ${fs}px ${FONT_T}`; c.fillText('today', xNow, ylab);
+    // (4) limit pace from today to month end
+    const needOff = bn.need > ymax;
+    if (bn.need > 0 && !needOff) { c.setLineDash([1 * DPR, 2.5 * DPR]); c.strokeStyle = cA(C_NEED, 0.8); c.lineWidth = lw; c.beginPath(); c.moveTo(xNow, yV(bn.need)); c.lineTo(px1, yV(bn.need)); c.stroke(); c.setLineDash([]); }
     // (3) forecast at the trailing 10-day rate, today -> month end
-    c.setLineDash([3.5 * DPR, 2.5 * DPR]); c.strokeStyle = C_FC; c.lineWidth = lw * 1.3; c.beginPath(); c.moveTo(xX(bn.rate), yNow); c.lineTo(xX(bn.rate), top); c.stroke(); c.setLineDash([]);
+    c.setLineDash([3.5 * DPR, 2.5 * DPR]); c.strokeStyle = C_FC; c.lineWidth = lw * 1.3; c.beginPath(); c.moveTo(xNow, yV(bn.rate)); c.lineTo(px1, yV(bn.rate)); c.stroke(); c.setLineDash([]);
     // (2) rolling 10-day average: smooth curve through day centres, ending at today's live rate
-    const rp = bn.roll.map((v, i) => [xX(v), i === bn.today ? yNow : yT(i + 0.5)]);
+    const rp = bn.roll.map((v, i) => [i === bn.today ? xNow : xD(i + 0.5), yV(v)]);
     c.strokeStyle = C_AVG; c.lineWidth = lw * 1.6; c.lineJoin = 'round'; c.lineCap = 'round'; c.beginPath(); c.moveTo(rp[0][0], rp[0][1]);
-    for (let i = 1; i < rp.length; i++) { const [x0, y0] = rp[i - 1], [x1, y1] = rp[i], my = (y0 + y1) / 2; c.bezierCurveTo(x0, my, x1, my, x1, y1); }
+    for (let i = 1; i < rp.length; i++) { const [x0, y0] = rp[i - 1], [x1, y1] = rp[i], mx = (x0 + x1) / 2; c.bezierCurveTo(mx, y0, mx, y1, x1, y1); }
     c.stroke();
-    // (1) daily actuals: thin solid line + dots; days past the cap clip to the edge with a ▸ and their value
-    const dp = bn.days.slice(0, bn.today + 1).map((v, i) => [xX(v), yT(i + 0.5), v]);
+    // (1) daily actuals: thin line + dots; days past the cap clip to the top edge with a ▴ and their value
+    const dp = bn.days.slice(0, bn.today + 1).map((v, i) => [xD(i + 0.5), yV(v), v]);
     c.strokeStyle = cA(C_DAY, 0.85); c.lineWidth = lw; c.beginPath(); dp.forEach(([x, y], i) => i ? c.lineTo(x, y) : c.moveTo(x, y)); c.stroke();
     c.lineCap = 'butt'; c.lineJoin = 'miter';
     const rr = Math.max(2, 1.7 * DPR);
     dp.forEach(([x, y, v], i) => {
       const live = i === bn.today, col = burnSegColor(Math.sqrt(v / bn.maxDay));
-      if (v > xmax) {
-        c.fillStyle = live ? C_FC : col; c.beginPath(); c.moveTo(px1 + rr * 2.4, y); c.lineTo(px1 - rr * 0.4, y - rr * 1.7); c.lineTo(px1 - rr * 0.4, y + rr * 1.7); c.closePath(); c.fill();
-        c.fillStyle = 'rgba(255,255,255,0.8)'; c.textAlign = 'right'; c.font = `700 ${fs}px ${FONT_T}`; c.fillText(fmtUsd(v) + (live ? '…' : ''), px1 - rr * 1.6, y);
+      if (v > ymax) {
+        c.fillStyle = live ? C_FC : col; c.beginPath(); c.moveTo(x, top - rr * 2.4); c.lineTo(x - rr * 1.7, top + rr * 0.4); c.lineTo(x + rr * 1.7, top + rr * 0.4); c.closePath(); c.fill();
+        c.fillStyle = 'rgba(255,255,255,0.85)'; c.textAlign = 'right'; c.font = `700 ${fs}px ${FONT_T}`; c.fillText(fmtUsd(v) + (live ? '…' : ''), x - rr * 2.4, top - rr * 0.6);
       } else if (live) { c.strokeStyle = col; c.lineWidth = Math.max(1.5, DPR); c.beginPath(); c.arc(x, y, rr * 1.2, 0, Math.PI * 2); c.stroke(); }
       else { c.fillStyle = col; c.beginPath(); c.arc(x, y, rr, 0, Math.PI * 2); c.fill(); }
     });
-    // line labels in the future band: forecast $/d right of its line, limit pace left of its line (staggered when close)
-    const xf = xX(bn.rate), xn = xX(bn.need), close = Math.abs(xf - xn) < w * 0.3, yA = top + (yNow - top) * (close ? 0.3 : 0.5), yB = top + (yNow - top) * (close ? 0.72 : 0.5);
-    c.font = `700 ${fs * 1.05}px ${FONT_T}`; c.fillStyle = C_FC;
-    const lf = `$${Math.round(bn.rate)}/d`, wf = c.measureText(lf).width;
-    if (xf + w * 0.03 + wf < px1 + w * 0.08) { c.textAlign = 'left'; c.fillText(lf, xf + w * 0.03, yA); } else { c.textAlign = 'right'; c.fillText(lf, xf - w * 0.03, yA); }
-    if (needOff) { c.font = `600 ${fs}px ${FONT_T}`; c.fillStyle = C_NEED; c.textAlign = 'right'; c.fillText(`$${Math.round(bn.need)} ▸`, px1 + w * 0.08, yB); }
-    else if (bn.need > 0) { c.font = `600 ${fs}px ${FONT_T}`; c.fillStyle = C_NEED; const ln = `$${Math.round(bn.need)}`, wn = c.measureText(ln).width;
-      if (xn - w * 0.03 - wn > px0) { c.textAlign = 'right'; c.fillText(ln, xn - w * 0.03, yB); } else { c.textAlign = 'left'; c.fillText(ln, xn + w * 0.03, yB); } }
-    thermo.levelY = yNow;
-  } else if (has) {                                                // no per-day data in the feed: a plain spend bar as fallback
-    thermo.levelY = bot - clamp(p / 100, 0, 1) * len;
-    c.fillStyle = cA(stat, 0.85); c.fillRect(w * 0.42, thermo.levelY, w * 0.16, bot - thermo.levelY);
-    c.strokeStyle = 'rgba(255,255,255,0.2)'; c.lineWidth = Math.max(1, DPR); c.strokeRect(w * 0.42, top, w * 0.16, len);
+    // line labels in the future band: forecast $/d above its line, limit pace below (or above when the lines are far apart)
+    const yf = yV(bn.rate), yn = yV(bn.need), xl = xNow + w * 0.006;
+    c.textAlign = 'left'; c.font = `700 ${fs * 1.05}px ${FONT_T}`; c.fillStyle = C_FC;
+    c.fillText(`$${Math.round(bn.rate)}/d`, xl, yf - fs * 0.75 < top ? yf + fs * 0.8 : yf - fs * 0.75);
+    c.font = `600 ${fs}px ${FONT_T}`; c.fillStyle = C_NEED;
+    if (needOff) { c.textAlign = 'right'; c.fillText(`$${Math.round(bn.need)} ▴`, px1, top - fs * 0.55); }
+    else if (bn.need > 0) { const below = yf < yn ? yn + fs * 0.8 : yn - fs * 0.75; c.fillText(`$${Math.round(bn.need)}`, xl + w * 0.035, clamp(below, top + fs * 0.4, bot - fs * 0.4)); }
+  } else if (has) {                                                // no per-day data in the feed: a plain horizontal spend bar as fallback
+    const by = top + ph2 * 0.3, bh = ph2 * 0.4;
+    c.fillStyle = cA(stat, 0.85); c.fillRect(px0, by, pw * clamp(p / 100, 0, 1), bh);
+    c.strokeStyle = 'rgba(255,255,255,0.2)'; c.lineWidth = Math.max(1, DPR); c.strokeRect(px0, by, pw, bh);
   }
-  const level = thermo.levelY || bot;
-  // projection footer
+  // ---- legend + projection (right) ----
+  const rx0 = w * 0.81, rmax = w * 0.18, rcx = rx0 + rmax / 2;
+  { const sw = w * 0.018, put = (x, y, col, dash, label) => {
+      c.strokeStyle = col; c.lineWidth = lw * 1.3; c.setLineDash(dash); c.beginPath(); c.moveTo(x, y); c.lineTo(x + sw, y); c.stroke(); c.setLineDash([]);
+      c.fillStyle = 'rgba(255,255,255,0.6)'; c.textAlign = 'left'; c.font = `500 ${fs}px ${FONT_T}`; c.fillText(label, x + sw + w * 0.005, y); };
+    put(rx0, h * 0.17, C_DAY, [], 'daily'); put(rx0 + rmax * 0.5, h * 0.17, C_AVG, [], '10d avg');
+    put(rx0, h * 0.35, C_FC, [3 * DPR, 2.5 * DPR], 'forecast'); if (bn && lim) put(rx0 + rmax * 0.5, h * 0.35, C_NEED, [1 * DPR, 2.5 * DPR], 'limit pace'); }
   c.textAlign = 'center';
   if (has && pc) {
     const pr = pc.proj;
-    c.fillStyle = over ? '#EE5257' : fPct > 90 ? stat : 'rgba(255,255,255,0.75)'; const l4 = `proj $${Math.round(pr).toLocaleString('en-US')}` + ` (${pr >= lim ? '+' : '-'}$${Math.round(Math.abs(pr - lim)).toLocaleString('en-US')})`;
-    fitFont(c, l4, 700, w * 0.11, maxW); c.fillText(l4, w / 2, h * 0.946);
+    c.fillStyle = over ? '#EE5257' : fPct > 90 ? stat : 'rgba(255,255,255,0.8)'; const l4 = `proj $${Math.round(pr).toLocaleString('en-US')}` + ` (${pr >= lim ? '+' : '-'}$${Math.round(Math.abs(pr - lim)).toLocaleString('en-US')})`;
+    fitFont(c, l4, 700, h * 0.15, rmax); c.fillText(l4, rcx, h * 0.6);
     const l5 = over ? hitLabel(pc) : 'on pace';
-    c.fillStyle = over ? '#EE5257' : 'rgba(255,255,255,0.5)'; fitFont(c, l5, over ? 700 : 500, w * 0.095, maxW); c.fillText(l5, w / 2, h * 0.972);
-    c.fillStyle = 'rgba(255,255,255,0.6)';
+    c.fillStyle = over ? '#EE5257' : 'rgba(255,255,255,0.5)'; fitFont(c, l5, over ? 700 : 500, h * 0.12, rmax); c.fillText(l5, rcx, h * 0.8);
   }
-  if (stale) { const hh = Math.round(usageAgeMs() / 3600000); c.fillStyle = '#F5A524'; const l6 = isFinite(hh) ? `stale ${hh}h` : 'stale'; fitFont(c, l6, 700, w * 0.1, maxW); c.fillText(l6, w / 2, h * 0.99); }
-  thermo.rect = { x: (innerWidth - gwCss), w: gwCss, level: level / DPR, pct: +p.toFixed(2) };
+  if (stale) { const hh = Math.round(usageAgeMs() / 3600000); c.fillStyle = '#F5A524'; const l6 = isFinite(hh) ? `stale ${hh}h` : 'stale'; fitFont(c, l6, 700, h * 0.1, lmax); c.textAlign = 'center'; c.fillText(l6, lx, h * 0.95); }
+  thermo.rect = { x: 0, y: innerHeight - ghCss, w: innerWidth, h: ghCss, pct: +p.toFixed(2) };
 }
 thermoSetup();
 gv.addEventListener('pointerdown', e => {                          // tap the gauge: brighten + refresh the feed
@@ -3113,10 +3109,10 @@ function drawPac(off) {
 // back out. Tuning: ADV.every (seconds between adventures), ?advEvery=N, ?adv=<kind>, ?adv=0.
 // =====================================================================================
 const ADV = { every: [150, 300], first: [60, 120], fade: 0.45, idleSec: 8,
-  dur: { building: 14, coding: 15, collaborating: 12, writing: 14, dreaming: 14, multiplying: 13, coordinating: 15, tugofwar: 13, chess: 90, checkers: 70, pacman: 70 },
+  dur: { building: 14, coding: 15, collaborating: 12, writing: 14, dreaming: 14, multiplying: 13, coordinating: 15, tugofwar: 13, datacenter: 21, chess: 90, checkers: 70, pacman: 70 },
   weight: { chess: 0.7, checkers: 0.5, pacman: 0.7 } };
 const ADV_LABEL = { building: 'building', coding: 'coding', collaborating: 'collaborating', writing: 'writing', dreaming: 'dreaming', multiplying: 'multiplying',
-  coordinating: 'coordinating', tugofwar: 'tug of war', chess: 'chess', checkers: 'checkers', pacman: 'pac-man' };
+  coordinating: 'coordinating', tugofwar: 'tug of war', datacenter: 'datacenter', chess: 'chess', checkers: 'checkers', pacman: 'pac-man' };
 const ADV_ON = Q.get('adv') !== '0';
 let adv = null, advNextAt = 0, advLast = '', advShow = false, advDim = 0, advForce = ADV.dur[Q.get('adv')] ? Q.get('adv') : null, advCount = 0;
 function advSchedule(first) { const e = +Q.get('advEvery'); advNextAt = now + (e > 0 ? e * rnd(0.75, 1.25) : first ? rnd(ADV.first[0], ADV.first[1]) : rnd(ADV.every[0], ADV.every[1])); }
@@ -3523,6 +3519,148 @@ ADV_DRAW.tugofwar = (t, a) => {
   const mx = W / 2 + s, my = ropeY + sag * 0.5; ctx.fillStyle = '#EE5257'; ctx.beginPath(); ctx.moveTo(mx - 1 * u, my); ctx.lineTo(mx + 1 * u, my); ctx.lineTo(mx, my + 4 * u + Math.sin(t * 8) * 0.4 * u); ctx.closePath(); ctx.fill();
   ctx.restore();
   if (won) { sparks(d.dir < 0 ? W * 0.25 : W * 0.75, gy - R * 2.4, (t - d.tw - 0.3) / 0.8, R * 1.5); }
+};
+
+// ---- v1.17 datacenter: a blocky voxel Grok Bot builds a little datacenter block by block, powers it up, celebrates ----
+// All procedural (canvas rects); oblique "voxel" cubes with a top + side face. ~20 s.
+const vhash = i => { const x = Math.sin(i * 12.9898 + 78.233) * 43758.5453; return x - Math.floor(x); };
+ADV_INIT.datacenter = a => {
+  const seq = []; let t = 1.0;
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 5; c++) { seq.push({ k: 'rack', c, r, t }); t += 0.55; }
+  t += 0.3; seq.push({ k: 'fan', c: 1, r: 3, t }); t += 0.7; seq.push({ k: 'fan', c: 3, r: 3, t }); t += 0.7;
+  seq.push({ k: 'solar', c: 0, r: 3, t }); t += 0.6; seq.push({ k: 'solar', c: 4, r: 3, t }); t += 0.6;
+  const walk0 = t + 0.1, walk1 = walk0 + 1.2; t = walk1 + 0.2;
+  for (let r = 0; r < 3; r++) { seq.push({ k: 'pole', c: 0, r, t, pole: true }); t += 0.5; }
+  const wire0 = t + 0.1, wire1 = wire0 + 0.7, on = wire1 + 0.2;
+  a.d = { seq, walk0, walk1, wire0, wire1, on, party: on + 1.1 };
+};
+function vcube(x, y, s, d, front, top, side, edge) {                 // (x,y) = top-left of the front face
+  ctx.fillStyle = top; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + d, y - d); ctx.lineTo(x + s + d, y - d); ctx.lineTo(x + s, y); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = side; ctx.beginPath(); ctx.moveTo(x + s, y); ctx.lineTo(x + s + d, y - d); ctx.lineTo(x + s + d, y + s - d); ctx.lineTo(x + s, y + s); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = front; ctx.fillRect(x, y, s, s);
+  if (edge) { ctx.strokeStyle = edge; ctx.lineWidth = Math.max(1, s * 0.025); ctx.strokeRect(x, y, s, s); }
+}
+function dcBlock(b, x, y, s, d, t, lit, idx) {
+  if (b.k === 'rack') {
+    vcube(x, y, s, d, '#2B3140', '#414A5E', '#1C212C', 'rgba(0,0,0,0.5)');
+    for (let j = 0; j < 3; j++) {                                    // three server slots, each with two LEDs
+      const sy = y + s * (0.12 + j * 0.29);
+      ctx.fillStyle = '#161A23'; ctx.fillRect(x + s * 0.1, sy, s * 0.8, s * 0.2);
+      ctx.fillStyle = 'rgba(255,255,255,0.07)'; for (let q = 0; q < 4; q++) ctx.fillRect(x + s * (0.14 + q * 0.09), sy + s * 0.05, s * 0.05, s * 0.1);
+      for (let q = 0; q < 2; q++) {
+        const hsh = vhash(idx * 7 + j * 3 + q), on = lit ? (Math.sin(t * (6 + hsh * 9) + hsh * 40) > -0.6) : (Math.sin(t * (2 + hsh * 3) + hsh * 40) > 0.55);
+        ctx.fillStyle = on ? (q ? (lit ? '#22D3EE' : '#60A5FA') : '#4ADE80') : '#253040';
+        ctx.fillRect(x + s * (0.66 + q * 0.11), sy + s * 0.065, s * 0.07, s * 0.07);
+      }
+    }
+  } else if (b.k === 'fan') {
+    vcube(x, y, s, d, '#5B6475', '#7A8496', '#434A58', 'rgba(0,0,0,0.5)');
+    const cx = x + s / 2, cy = y + s / 2, R = s * 0.36, sp = lit ? 14 : 3;
+    ctx.fillStyle = '#20252F'; ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.fill();
+    ctx.fillStyle = lit ? '#BFEFFF' : '#9AA3B2';
+    for (let q = 0; q < 4; q++) { const an = t * sp + q * TAU / 4; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, R * 0.9, an, an + 0.6); ctx.closePath(); ctx.fill(); }
+    ctx.fillStyle = '#5B6475'; ctx.beginPath(); ctx.arc(cx, cy, R * 0.18, 0, TAU); ctx.fill();
+    if (lit) { ctx.globalAlpha *= 0.5; ctx.fillStyle = '#E0F2FE'; for (let q = 0; q < 3; q++) { const k = (t * 0.6 + q / 3) % 1; ctx.beginPath(); ctx.arc(cx + d * 0.5 + Math.sin(k * 6 + q) * s * 0.1, y - d - k * s * 0.9, s * (0.1 + k * 0.12), 0, TAU); ctx.fill(); } ctx.globalAlpha /= 0.5; }
+  } else if (b.k === 'solar') {
+    const py = y + s * 0.7;                                          // a tilted slab panel on a short stand
+    ctx.fillStyle = '#6B7280'; ctx.fillRect(x + s * 0.45, py, s * 0.1, s * 0.3);
+    ctx.fillStyle = '#1E3A8A'; ctx.beginPath(); ctx.moveTo(x, py + s * 0.05); ctx.lineTo(x + d * 1.6, py - s * 0.55); ctx.lineTo(x + s + d * 1.6, py - s * 0.55); ctx.lineTo(x + s, py + s * 0.05); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = 'rgba(147,197,253,0.6)'; ctx.lineWidth = Math.max(1, s * 0.025); ctx.beginPath();
+    for (let q = 1; q < 4; q++) { const f = q / 4; ctx.moveTo(x + s * f, py + s * 0.05); ctx.lineTo(x + s * f + d * 1.6, py - s * 0.55); }
+    for (let q = 1; q < 3; q++) { const f = q / 3; ctx.moveTo(x + d * 1.6 * f, py + s * 0.05 - s * 0.6 * f); ctx.lineTo(x + s + d * 1.6 * f, py + s * 0.05 - s * 0.6 * f); }
+    ctx.stroke();
+    const gl = (t * 0.5 + idx * 0.3) % 1; ctx.fillStyle = `rgba(255,255,255,${(lit ? 0.45 : 0.25) * Math.sin(gl * Math.PI)})`; ctx.fillRect(x + s * gl * 0.8 + d * 0.8, py - s * 0.3, s * 0.12, s * 0.12);
+  } else if (b.k === 'pole') {
+    const pw = s * 0.34, px = x + (s - pw) / 2;
+    vcube(px, y, pw, d * 0.5, '#8B5A2B', '#A9713B', '#6B4420');
+    ctx.fillStyle = 'rgba(0,0,0,0.18)'; ctx.fillRect(px, y + s * 0.3, pw, s * 0.05); ctx.fillRect(px, y + s * 0.7, pw, s * 0.05);
+    ctx.fillRect(px, y + s * 0.34, pw, s * 0.36); ctx.fillStyle = '#8B5A2B'; ctx.fillRect(px, y + s * 0.34, pw, s * 0.36);
+    if (b.r === 2) { ctx.fillStyle = '#6B4420'; ctx.fillRect(x - s * 0.1, y + s * 0.08, s * 1.2, s * 0.14); ctx.fillStyle = '#D1D5DB'; ctx.fillRect(x - s * 0.05, y - s * 0.02, s * 0.1, s * 0.12); ctx.fillRect(x + s * 0.95, y - s * 0.02, s * 0.1, s * 0.12); }
+  }
+}
+function vbot(x, gy, v, o) {                                          // voxel Grok Bot: black cube head + white pill eyes, blocky body
+  const d = v * 0.22, sw = o.walk ? Math.sin(o.walkPh) * 0.5 : 0, lift = o.hop || 0, y0 = gy - lift;
+  const leg = (dx, an) => { ctx.save(); ctx.translate(x + dx, y0 - v * 0.55); ctx.rotate(an); vcube(-v * 0.14, 0, v * 0.28, d * 0.5, '#2F3542', '#3D4454', '#232833'); ctx.fillStyle = '#2F3542'; ctx.fillRect(-v * 0.14, v * 0.28, v * 0.28, v * 0.27); ctx.restore(); };
+  leg(-v * 0.18, sw); leg(v * 0.18, -sw);
+  const by = y0 - v * 0.55 - v * 0.75;
+  vcube(x - v * 0.4, by, v * 0.8, d, '#3A4150', '#4B5468', '#2A303C');
+  ctx.fillRect(x - v * 0.4, by + v * 0.8 - v * 0.05, v * 0.8, 0);
+  ctx.fillStyle = '#3A4150'; ctx.fillRect(x - v * 0.4, by + v * 0.6, v * 0.8, v * 0.15);
+  ctx.fillStyle = '#22D3EE'; ctx.fillRect(x - v * 0.4, by + v * 0.3, v * 0.8, v * 0.07);           // a little cyan belt stripe
+  const arm = (side, an) => { ctx.save(); ctx.translate(x + side * v * 0.52, by + v * 0.08); ctx.rotate(an); ctx.fillStyle = side > 0 ? '#323947' : '#353C4A'; ctx.fillRect(-v * 0.12, 0, v * 0.24, v * 0.68); ctx.fillStyle = '#4B5468'; ctx.fillRect(-v * 0.12, 0, v * 0.24, v * 0.08);
+    if (o.carry && side > 0) { ctx.save(); ctx.translate(-v * 0.15, v * 0.6); vcube(0, 0, v * 0.3, v * 0.08, '#2B3140', '#414A5E', '#1C212C'); ctx.fillStyle = '#4ADE80'; ctx.fillRect(v * 0.2, v * 0.06, v * 0.04, v * 0.04); ctx.restore(); }
+    ctx.restore(); };
+  arm(-1, o.armL != null ? o.armL : -sw * 0.8); arm(1, o.armR != null ? o.armR : sw * 0.8);
+  const hs = v * 1.0, hx = x - hs / 2, hy = by - hs * 0.98;
+  vcube(hx, hy, hs, d * 1.2, '#050505', '#262626', '#141414', 'rgba(255,255,255,0.28)');
+  const ex = o.look || 0, ew = hs * 0.15, eh = hs * 0.34, ecy = hy + hs * 0.48;
+  ctx.fillStyle = '#fff';
+  for (const k of [-1, 1]) {
+    const cx = x + k * hs * 0.2 + ex * hs * 0.06;
+    if (o.happy) { ctx.strokeStyle = '#fff'; ctx.lineWidth = ew * 0.75; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(cx, ecy + eh * 0.15, ew * 0.95, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); ctx.lineCap = 'butt'; }
+    else { const h2 = eh * (o.blink ? 0.12 : 1); rrect(cx - ew / 2, ecy - h2 / 2, ew, h2, ew / 2); ctx.fill(); }
+  }
+}
+ADV_DRAW.datacenter = (t, a) => {
+  const u = advScale(), D = a.d, gy = H * 0.74;
+  const bs = Math.min(8.5 * u, (gy - H * 0.2) / 5.2, W / 15), d = bs * 0.32, v = bs * 1.05;
+  const bx0 = W / 2 - bs * 2.9, poleX = bx0 + bs * 7.4, lit = t >= D.on, litK = clamp((t - D.on) / 1.0, 0, 1);
+  ctx.save();
+  // sky: a voxel sun that rises a little; stars twinkle once the datacenter is lit
+  { const sk = clamp(t / 6, 0, 1), sx = W * 0.8, sy = H * (0.34 - 0.1 * ease(sk)), ss = bs * 0.9;
+    ctx.globalAlpha = 0.9; ctx.fillStyle = '#F59E0B'; ctx.fillRect(sx - ss * 0.75, sy - ss * 0.75, ss * 1.5, ss * 1.5); ctx.fillStyle = '#FCD34D'; ctx.fillRect(sx - ss * 0.5, sy - ss * 0.5, ss, ss); ctx.fillStyle = '#FEF3C7'; ctx.fillRect(sx - ss * 0.22, sy - ss * 0.22, ss * 0.44, ss * 0.44);
+    ctx.globalAlpha = 0.5 + 0.2 * Math.sin(t * 3); ctx.fillStyle = '#FCD34D'; for (let q = 0; q < 8; q++) { const an = q * TAU / 8 + t * 0.2, r = ss * 1.2; ctx.fillRect(sx + Math.cos(an) * r - ss * 0.08, sy + Math.sin(an) * r - ss * 0.08, ss * 0.16, ss * 0.16); }
+    ctx.globalAlpha = 1; }
+  // glow behind the building once lit
+  if (litK > 0) { const g = ctx.createRadialGradient(bx0 + bs * 2.5, gy - bs * 2, bs * 0.5, bx0 + bs * 2.5, gy - bs * 2, bs * 5); g.addColorStop(0, `rgba(34,211,238,${0.28 * litK})`); g.addColorStop(1, 'rgba(34,211,238,0)'); ctx.fillStyle = g; ctx.fillRect(bx0 - bs * 3, gy - bs * 7.5, bs * 11, bs * 7.5); }
+  // ground: a strip of grass blocks
+  for (let x = W * 0.1; x < W * 0.9 - bs * 0.5; x += bs) { vcube(x, gy, bs, d, '#6B4423', '#4CAF50', '#55361C'); ctx.fillStyle = '#3E9142'; ctx.fillRect(x, gy, bs, bs * 0.18); ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(x + bs * 0.2, gy + bs * 0.45, bs * 0.12, bs * 0.12); ctx.fillRect(x + bs * 0.65, gy + bs * 0.7, bs * 0.1, bs * 0.1); }
+  ctx.fillStyle = '#000'; ctx.fillRect(0, gy + bs * 0.62, W, H);                                  // keep the ground slim
+  // bot position: left of the building, walks over to the pole, then parties there
+  const xL = bx0 - bs * 1.5, xR = poleX - bs * 1.25, wk = clamp((t - D.walk0) / (D.walk1 - D.walk0), 0, 1), walking = wk > 0 && wk < 1;
+  const botX = xL + (xR - xL) * ease(wk), FL = 0.45;
+  // placed blocks (bottom row first, left to right) + the one in flight
+  const placed = D.seq.filter(b => t >= b.t).sort((p, q) => p.r - q.r || p.c - q.c);
+  const cellXY = b => b.pole ? [poleX, gy - (b.r + 1) * bs] : [bx0 + b.c * bs, gy - (b.r + 1) * bs];
+  for (const b of placed) {
+    const [x, y] = cellXY(b), lt = t - b.t, pop = lt < 0.22 ? 1 + 0.15 * Math.sin(lt / 0.22 * Math.PI) : 1, idx = D.seq.indexOf(b);
+    const lb = lit && (b.pole || clamp((t - D.on) * 6 - b.c, 0, 1) > 0);
+    ctx.save(); ctx.translate(x + bs / 2, y + bs / 2); ctx.scale(pop, 2 - pop); ctx.translate(-bs / 2, -bs / 2); dcBlock(b, 0, 0, bs, d, t, lb, idx); ctx.restore();
+    if (lt < 0.5 && !b.pole) sparks(x + bs / 2, y + bs / 2, lt / 0.5, bs * 0.7, '#fff', 6);
+  }
+  // power line from pole top to the roof (draws in, then glows with a running spark)
+  if (t > D.wire0) {
+    const k = clamp((t - D.wire0) / (D.wire1 - D.wire0), 0, 1), x0 = poleX - bs * 0.05, y0 = gy - 3 * bs + bs * 0.02, x1 = bx0 + 5 * bs + d * 0.6, y1 = gy - 3 * bs + bs * 0.25;
+    const P = s => { const xx = x0 + (x1 - x0) * s, yy = y0 + (y1 - y0) * s + Math.sin(s * Math.PI) * bs * 0.45; return [xx, yy]; };
+    ctx.strokeStyle = lit ? '#FDE047' : '#9CA3AF'; ctx.lineWidth = Math.max(2, bs * 0.05); ctx.beginPath();
+    for (let q = 0; q <= 20; q++) { const s = q / 20 * k, [xx, yy] = P(s); q ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); } ctx.stroke();
+    if (lit) { const s = (t * 0.9) % 1, [xx, yy] = P(s); ctx.fillStyle = '#FFF'; ctx.fillRect(xx - bs * 0.07, yy - bs * 0.07, bs * 0.14, bs * 0.14); }
+  }
+  // the block in flight (bot tosses it from its hand in an arc)
+  let throwK = -1;
+  for (const b of D.seq) { if (t >= b.t - FL && t < b.t) {
+    throwK = (t - (b.t - FL)) / FL; const [tx, ty] = cellXY(b), sx = botX + v * 0.6, sy = gy - v * 1.6, x = sx + (tx - sx) * throwK, y = sy + (ty - sy) * throwK - Math.sin(throwK * Math.PI) * bs * 1.6, s = bs * (0.4 + 0.6 * throwK);
+    ctx.save(); ctx.translate(x + bs / 2, y + bs / 2); ctx.rotate((1 - throwK) * 3); ctx.scale(s / bs, s / bs); ctx.translate(-bs / 2, -bs / 2); dcBlock(b, 0, 0, bs, d, t, false, 0); ctx.restore();
+  } }
+  // the bot
+  const party = t >= D.party, pk = t - D.party;
+  const blink = ((t + 0.7) % 3.3) < 0.14;
+  const o = { walk: walking, walkPh: t * 12, carry: walking, blink, look: walking ? 1 : 0.6 };
+  if (throwK >= 0) o.armR = -2.6 + throwK * 2.0;                                                    // overhand toss
+  if (party) { o.hop = Math.abs(Math.sin(pk * 5.5)) * bs * 0.55; o.happy = 1; o.armL = 2.7 + Math.sin(pk * 11) * 0.3; o.armR = -2.7 - Math.sin(pk * 11) * 0.3; o.look = 0; }
+  else if (lit) { o.happy = 1; o.look = -0.8; }
+  vbot(botX, gy, v, o);
+  // finale: voxel confetti + sparkle bursts over the lit datacenter
+  if (party) {
+    const cols = ['#22D3EE', '#E879F9', '#4ADE80', '#FDE047', '#FB923C', '#60A5FA'];
+    for (let q = 0; q < 34; q++) { const h1 = vhash(q), h2 = vhash(q + 50), k = (pk * (0.35 + h2 * 0.3) + h1) % 1, cx = bx0 - bs * 2 + h1 * bs * 10, cy = H * 0.12 + k * (gy - H * 0.12);
+      ctx.globalAlpha = 0.9 * (1 - k * 0.6); ctx.fillStyle = cols[q % cols.length]; ctx.save(); ctx.translate(cx + Math.sin(pk * 3 + q) * bs * 0.3, cy); ctx.rotate(pk * (2 + h2 * 4)); ctx.fillRect(-bs * 0.07, -bs * 0.07, bs * 0.14, bs * 0.14); ctx.restore(); }
+    ctx.globalAlpha = 1;
+    for (let q = 0; q < 3; q++) { const k = ((pk - q * 0.7) % 2.1) / 0.9; if (pk > q * 0.7) sparks(bx0 + bs * (0.8 + q * 1.7), gy - bs * (5 + (q % 2) * 0.8), k, bs * 1.1, cols[q * 2 % cols.length], 10); }
+    ctx.globalAlpha = 0.55 * clamp(pk / 0.6, 0, 1); ctx.fillStyle = '#E0F2FE'; ctx.font = fnt(700, bs * 0.38); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('datacenter online', bx0 + bs * 2.5, gy + bs * 0.95); ctx.globalAlpha = 1;
+  }
+  ctx.restore();
 };
 
 ADV_DRAW.chess = () => drawChess(0); ADV_DRAW.checkers = () => drawCheckers(0); ADV_DRAW.pacman = () => drawPac(0);

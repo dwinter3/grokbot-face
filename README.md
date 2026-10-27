@@ -26,12 +26,13 @@ A fullscreen animated face and screensaver for the Google Pixel Tablet.
 - 🗣️ **"Hey Grok Bot."** Offline wake word (Vosk). It perks up and opens the Grok Bot app. A long-press anywhere opens it too.
 - 🕐 **A clock on every look.** It's a desk clock first.
 - 🏓 **Games it plays against itself:** Pong around the clock, chess, checkers, Pac-Man.
-- 🎭 **A cast of characters,** plus little *adventures*: building towers, coding, writing the newsletter, dreaming, multiplying into 16 bots, tug of war.
+- 🎭 **A cast of characters,** plus little *adventures*: building towers, coding, writing the newsletter, dreaming, multiplying into 16 bots, tug of war, and a blocky voxel Grok Bot building a datacenter.
 - 📰 **AI news moments.** Calm center-screen headlines with short summaries, plus a "THIS JUST IN" takeover when a coding agent ships a release.
-- 🌡️ **Plan-usage thermostat.** A slim gauge on the right edge for your Cursor spend versus your limit, with an end-of-cycle pace forecast. The face gets a little nervous when you're on pace to overspend.
-- 📈 **Burn chart.** Under the gauge, a sideways line chart of this cycle's daily spend, its 10-day average, a forecast and your limit pace, with "hits limit ~day" if you're running hot.
+- 🌡️ **Plan-usage thermostat.** A slim strip along the bottom for your Cursor spend versus your limit, with an end-of-cycle pace forecast. The face gets a little nervous when you're on pace to overspend.
+- 📈 **Burn chart.** In the same bottom strip, a left-to-right line chart of this cycle's daily spend, its 10-day average, a forecast and your limit pace, with "hits limit ~day" if you're running hot.
 
-  <img src="docs/media/burn-chart-zoom.png" height="360" alt="Burn chart (sample data)"> <img src="docs/media/burn-chart-face.png" height="360" alt="Face with burn chart (sample data)">
+  <img src="docs/media/burn-strip-face.png" width="640" alt="Face with the bottom burn strip (sample data)"><br>
+  <img src="docs/media/burn-strip-zoom.png" width="640" alt="Bottom burn strip close-up (sample data)">
 - ✊ **Rock-paper-scissors.** Tap the little clock (or hold up a fist) and play a best-of-three against the bot with real hand gestures, read on the device.
 - 🎃 **Halloween pumpkin with costumes.** An orange Grok Bot pumpkin that wobbles, plus 10 corny costumes. See below.
 - 🔌 **Offline by default.** Build without a feed URL and the app doesn't even get the INTERNET permission.
@@ -63,6 +64,9 @@ A fullscreen animated face and screensaver for the Google Pixel Tablet.
 <td><img src="docs/media/adv-coding.png" alt="Bot coding in a little terminal"><br><sub>💻 <b>Adventure: coding</b>, and the tests pass</sub></td>
 <td><img src="docs/media/adv-multiplying.png" alt="Grok Bot multiplied into 16 bots"><br><sub>✖️ <b>Adventure: multiplying</b> 1 → 16 bots</sub></td>
 <td><img src="docs/media/adv-tugofwar.png" alt="Bots playing tug of war"><br><sub>🪢 <b>Adventure: tug of war</b>, 2 v 2</sub></td>
+</tr>
+<tr>
+<td><img src="docs/media/adv-datacenter.png" alt="Blocky voxel Grok Bot celebrating a finished datacenter"><br><sub>🏗️ <b>Adventure: datacenter</b>, racks, fans, solar and a power line</sub></td>
 </tr>
 <tr>
 <td><img src="docs/media/news-moment.png" alt="Center-screen news moment"><br><sub>📰 <b>News moment</b>: one calm headline at a time</sub></td>

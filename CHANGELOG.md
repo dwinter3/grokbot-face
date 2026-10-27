@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.17.0 (2026-10-27): bottom burn strip + datacenter cutscene
+- The burn chart moves from the right edge to a slim horizontal strip along the bottom. Days run left to right; same lines, colors and footer as 1.16 ("left / % used" on the left, `proj $X (±$Y)` and pace on the right).
+- The face canvas stops above the strip, so the face gets its full width back. Glancing at spend now looks down instead of sideways.
+- New ~21 s adventure, `datacenter`: a procedural voxel Grok Bot builds server racks, fans and solar panels, runs a power line, then celebrates when it lights up. Try it with `?adv=datacenter`.
+- `tests/v117-strip-shots.js` renders the README previews from `tests/sample-usage.json`.
+
 ## 1.16.0 (2026-10-27): sideways burn chart
 - Replaces the 1.15 bars with a multi-line burn chart in the right-edge gauge. Time runs bottom to top (cycle start at the bottom, cycle end at the top) with a "today" marker.
 - Lines: daily actuals (cyan), trailing 10-day average (magenta), dashed forecast at the 10-day rate, and dotted green limit pace (the daily rate that lands exactly on your limit).
