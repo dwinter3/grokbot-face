@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 David Winter
-import { compute } from './compute.js';
+import { compute, dailyFrom } from './compute.js';
 import { newsCron, harnessView } from './news.js';
 const ORIGIN = 'https://appassets.androidplatform.net';
 const cors = { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Methods': 'GET, OPTIONS',
@@ -12,7 +12,15 @@ async function refresh(env) {
     headers: { 'Authorization': 'Basic ' + btoa(env.CURSOR_KEY + ':'), 'Content-Type': 'application/json' },
     body: JSON.stringify({ searchTerm: env.SEARCH_TERM }) });
   if (!r.ok) throw new Error('cursor ' + r.status);
-  const out = JSON.stringify(compute(await r.json()));
+  const api = await r.json();
+  let daily = null;                                                  // v1.15 burn chart; fail-soft (keeps last good series)
+  try {
+    const g = await fetch('https://api.cursor.com/teams/groups', { headers: { 'Authorization': 'Basic ' + btoa(env.CURSOR_KEY + ':') } });
+    if (g.ok) daily = dailyFrom(await g.json(), env.SEARCH_TERM);
+    else console.log('groups ' + g.status);
+  } catch (e) { console.log('groups failed: ' + e.message); }
+  if (!daily) { try { const prev = JSON.parse(await env.FEED.get('usage') || 'null'); if (prev && prev.cycleStart === new Date(api.subscriptionCycleStart).toISOString()) daily = prev.daily || null; } catch (e) {} }
+  const out = JSON.stringify(compute(api, Date.now(), daily));
   await env.FEED.put('usage', out);
   return out;
 }

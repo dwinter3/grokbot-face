@@ -29,6 +29,9 @@ A fullscreen animated face and screensaver for the Google Pixel Tablet.
 - 🎭 **A cast of characters,** plus little *adventures*: building towers, coding, writing the newsletter, dreaming, multiplying into 16 bots, tug of war.
 - 📰 **AI news moments.** Calm center-screen headlines with short summaries, plus a "THIS JUST IN" takeover when a coding agent ships a release.
 - 🌡️ **Plan-usage thermostat.** A slim gauge on the right edge for your Cursor spend versus your limit, with an end-of-cycle pace forecast. The face gets a little nervous when you're on pace to overspend.
+- 📈 **Burn chart.** Under the gauge, a sideways line chart of this cycle's daily spend, its 10-day average, a forecast and your limit pace, with "hits limit ~day" if you're running hot.
+
+  <img src="docs/media/burn-chart-zoom.png" height="360" alt="Burn chart (sample data)"> <img src="docs/media/burn-chart-face.png" height="360" alt="Face with burn chart (sample data)">
 - ✊ **Rock-paper-scissors.** Tap the little clock (or hold up a fist) and play a best-of-three against the bot with real hand gestures, read on the device.
 - 🎃 **Halloween pumpkin with costumes.** An orange Grok Bot pumpkin that wobbles, plus 10 corny costumes. See below.
 - 🔌 **Offline by default.** Build without a feed URL and the app doesn't even get the INTERNET permission.

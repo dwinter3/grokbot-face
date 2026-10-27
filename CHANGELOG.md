@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.16.0 (2026-10-27): sideways burn chart
+- Replaces the 1.15 bars with a multi-line burn chart in the right-edge gauge. Time runs bottom to top (cycle start at the bottom, cycle end at the top) with a "today" marker.
+- Lines: daily actuals (cyan), trailing 10-day average (magenta), dashed forecast at the 10-day rate, and dotted green limit pace (the daily rate that lands exactly on your limit).
+- Outlier days are clipped at the axis cap with a ▸ marker so one big day doesn't flatten the chart.
+- Footer: `proj $X (±$Y)` plus "on pace" or "hits limit ~day", amber/red when over.
+- Days are UTC (matching Cursor's daily spend), so "today" rolls over at 00:00 UTC.
+
+## 1.15.0 (2026-10-27): burn chart (replaced in 1.16)
+- Stacked daily-spend bar chart under the thermostat gauge. Superseded by the line chart in 1.16.
+- Worker: `usage.json` gains an optional `daily: [{d, usd}]` series for the current cycle, read from Cursor `GET /teams/groups` (your member's `dailySpend`). Fail-soft: if the call fails, the last good series for the same cycle is kept.
+- Worker: limit comes from `effectivePerUserLimitDollars` first, then the older limit fields.
+
 ## 1.14.0 (2026-10-26): pumpkin costumes
 - 10 corny Halloween costumes for the pumpkin: witch, Dracula, Groucho glasses, pirate (eyepatch over one eye, the other still animates), Frankenstein, mummy, ghost, wizard, devil, skeleton. A plain pumpkin turns up about 1 time in 11.
 - Costumes are layered canvas shapes. Masks and face paint sit under the white eyes and the eyes move less inside eye holes. Everything rocks with the pumpkin.

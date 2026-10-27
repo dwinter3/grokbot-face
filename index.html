@@ -527,7 +527,11 @@ let usageVisible = true, usage = null, usageFetchedAt = 0, usageErr = '', gaugeR
 try { usageVisible = localStorage.getItem('grokbot.usage') !== '0'; usage = JSON.parse(localStorage.getItem('grokbot.usage.cache') || 'null'); } catch (e) {}
 if (usage && usage.data) { usageFetchedAt = usage.fetchedAt || 0; usage = usage.data; } else usage = null;
 const num = v => typeof v === 'number' && isFinite(v);
-function validUsage(d) { return d && num(d.spentUsd) && num(d.limitUsd) && d.limitUsd > 0; }
+function validUsage(d) {
+  if (!(d && num(d.spentUsd) && num(d.limitUsd) && d.limitUsd > 0)) return false;
+  if (d.daily != null) d.daily = Array.isArray(d.daily) ? d.daily.filter(r => r && /^\d{4}-\d{2}-\d{2}$/.test(r.d) && num(r.usd) && r.usd >= 0).slice(-40) : null;   // v1.15
+  return true;
+}
 let usageInflight = false;
 async function fetchUsage(force) {
   if (!USAGE_ON || usageInflight) return;
@@ -559,7 +563,48 @@ const usagePct = () => usage ? clamp(usage.pct, 0, 999) : 0;
 const usageColor = p => p > 90 ? '#EE5257' : p > 75 ? '#F5A524' : '#3EC46D';
 // v1.12 pace forecast. The feed's projectedUsd = spend so far * cycle length / time elapsed, so the spend rate
 // is projectedUsd / cycle length; the limit is crossed at updatedAt + (limit - spent) / rate (capped at the reset).
+// v1.15 burn model: per-day actuals (feed `daily`, UTC dates) -> stacked segments, trailing 10-day rate, month-end forecast.
+// Rate = spend inside the last 10 x 24 h (today's partial day counts in full, the oldest day pro-rated) / 10 days
+// (or / elapsed time early in the cycle). Forecast = spent now + rate * time left in the cycle.
+const DAY_MS = 864e5;
+let burnMemo = null, burnMemoKey = '';
+function usageBurn() {
+  if (!usage || !Array.isArray(usage.daily) || !usage.daily.length || !num(usage.limitUsd) || usage.limitUsd <= 0) return null;
+  const cs = Date.parse(usage.cycleStart), ce = Date.parse(usage.cycleEnd);
+  if (!isFinite(cs) || !isFinite(ce) || ce <= cs) return null;
+  const nowMs = Math.min(Date.now(), ce), mk = Math.floor(nowMs / 60000) + '|' + usage.updatedAt + '|' + usage.daily.length;
+  if (mk === burnMemoKey) return burnMemo;
+  const nDays = Math.round((ce - cs) / DAY_MS), days = new Array(nDays).fill(0);
+  for (const r of usage.daily) {
+    const t = Date.parse(r && r.d + 'T00:00:00Z'); if (!isFinite(t) || !num(r.usd) || r.usd < 0) continue;
+    const i = Math.floor((t - cs) / DAY_MS); if (i >= 0 && i < nDays) days[i] += r.usd;
+  }
+  const sum = days.reduce((a, b) => a + b, 0);
+  const sp = num(usage.spentUsd) ? usage.spentUsd : sum, kk = sum > 0 ? sp / sum : 1, k = kk > 0.85 && kk < 1.15 ? kk : 1;   // match the live meter
+  const w0 = Math.max(nowMs - 10 * DAY_MS, cs);
+  let win = 0;
+  for (let i = 0; i < nDays; i++) {
+    const a = cs + i * DAY_MS, b = a + DAY_MS; if (a >= nowMs) break;
+    if (b <= w0) continue;
+    win += days[i] * (b > nowMs ? 1 : clamp((b - Math.max(a, w0)) / DAY_MS, 0, 1));
+  }
+  const rate = win * k / Math.max((nowMs - w0) / DAY_MS, 0.5);   // $/day
+  const today = clamp(Math.floor((nowMs - cs) / DAY_MS), 0, nDays - 1), left = Math.max(0, (ce - nowMs) / DAY_MS);
+  const maxDay = Math.max(1e-6, ...days.slice(0, today + 1));
+  // v1.16 rolling 10-day average per day (full days; today uses the live 240 h rate) + the pace that lands exactly on the limit
+  const roll = [];
+  for (let i = 0; i <= today; i++) { if (i === today) { roll.push(rate); break; } let t = 0; const a0 = Math.max(0, i - 9); for (let j = a0; j <= i; j++) t += days[j]; roll.push(t * k / (i - a0 + 1)); }
+  const need = left > 0.05 ? Math.max(0, (usage.limitUsd - sp) / left) : 0, elapsed = clamp((nowMs - cs) / DAY_MS, 0, nDays);
+  burnMemo = { days: days.map(v => v * k), today, rate, forecast: sp + rate * left, spent: sp, left, maxDay: maxDay * k, lim: usage.limitUsd, roll, need, nDays, elapsed };
+  burnMemoKey = mk; return burnMemo;
+}
 function usagePace() {
+  const bn = usageBurn();
+  if (bn) {                                                         // v1.15: pace = trailing 10-day rate
+    const lim = bn.lim, sp = bn.spent, pr = bn.forecast, over = pr > lim, t0 = Date.now();
+    const hitAt = over ? Math.min(Date.parse(usage.cycleEnd), sp >= lim ? t0 : t0 + (lim - sp) / Math.max(bn.rate, 1e-9) * DAY_MS) : null;
+    return { ratio: pr / lim, over, at: sp >= lim, hitAt, proj: pr, rate: bn.rate };
+  }
   if (!usage || !num(usage.projectedUsd) || !num(usage.limitUsd) || usage.limitUsd <= 0) return null;
   const cs = Date.parse(usage.cycleStart), ce = Date.parse(usage.cycleEnd), ref = Date.parse(usage.updatedAt);
   const lim = usage.limitUsd, sp = usage.spentUsd, pr = usage.projectedUsd;
@@ -671,9 +716,17 @@ function thermoLiquid(p) {                                         // cool teal 
   if (p <= 85) return mixHex('#2DD4BF', '#F5A524', (p - 60) / 25);
   return mixHex('#F5A524', '#EE5257', clamp((p - 85) / 13, 0, 1));
 }
+function rgbToHex(c) { if (c[0] === '#') return c; const m = c.match(/\d+/g); return '#' + m.slice(0, 3).map(x => (+x).toString(16).padStart(2, '0')).join(''); }
+const cA = (col, a) => rgbA(mixHex(rgbToHex(col), rgbToHex(col), 0), a);   // any '#hex' / 'rgb()' -> rgba
 function rgbA(rgb, a) { return rgb.replace('rgb(', 'rgba(').replace(')', ',' + a + ')'); }
 let hitKeyMin = -1, hitKeyStr = '';
 function thermoHitKey() { const m = Math.floor(Date.now() / 60000); if (m !== hitKeyMin) { hitKeyMin = m; hitKeyStr = hitLabel(usagePace()); } return hitKeyStr; }
+function burnKey() { const b = usageBurn(); return b ? b.days.length + ':' + b.today + ':' + b.rate.toFixed(2) + ':' + Math.round(b.forecast) : 'nb'; }
+const fmtUsd = v => v >= 10000 ? '$' + Math.round(v / 1000) + 'k' : v >= 1000 ? '$' + (Math.round(v / 100) / 10).toString().replace(/\.0$/, '') + 'k' : '$' + Math.round(v);
+function burnSegColor(t) {                                         // per-day intensity: cool cyan -> blue -> violet -> pink -> hot orange
+  const st = ['#22D3EE', '#60A5FA', '#A78BFA', '#F472B6', '#FB923C'], x = clamp(t, 0, 1) * (st.length - 1), i = Math.min(st.length - 2, Math.floor(x));
+  return mixHex(st[i], st[i + 1], x - i);
+}
 function drawThermo(dt) {
   if (!thermoOn || TGW < 8) return;
   const has = !!usage, target = has ? usagePct() : 0;
@@ -688,7 +741,7 @@ function drawThermo(dt) {
   const fps = idle ? 2 : 12, tick = Math.floor(now * fps);                       // liquid motion repaints at low fps only
   const t = now / 60, dx = 1.5 * DPR * Math.sin(t * 0.37 + ph[0]), dy = 2 * DPR * Math.sin(t * 0.23 + ph[1]);   // 1-2 px slow drift
   const stale = has && usageAgeMs() > 3600 * 1000;
-  const key = [tick, thermo.shown.toFixed(2), (thermo.a * (1 - advDim)).toFixed(3), has ? usage.spentUsd + '/' + usage.limitUsd + '/' + usage.daysLeft + '/' + usage.projectedUsd + '/' + thermoHitKey() : '-', stale, TGW, TGH].join('|');
+  const key = [tick, thermo.shown.toFixed(2), (thermo.a * (1 - advDim)).toFixed(3), has ? usage.spentUsd + '/' + usage.limitUsd + '/' + usage.daysLeft + '/' + usage.projectedUsd + '/' + thermoHitKey() + '/' + burnKey() : '-', stale, TGW, TGH].join('|');
   if (key === thermo.key) return;
   thermo.key = key;
   const c = gctx, w = TGW, h = TGH, p = thermo.shown, liq = thermoLiquid(p), T = tick / fps;
@@ -701,108 +754,94 @@ function drawThermo(dt) {
   const big = has ? (left >= 0 ? `$${Math.round(left)}` : `-$${Math.round(-left)}`) : '--';
   fitFont(c, big, 800, w * 0.34, maxW); c.fillText(big, w / 2, h * 0.052);
   c.fillStyle = 'rgba(255,255,255,0.6)'; fitFont(c, left >= 0 ? 'left' : 'over', 600, w * 0.11, maxW); c.fillText(left >= 0 ? 'left' : 'over', w / 2, h * 0.093);
-  c.fillStyle = has ? liq : '#666'; const pl = has ? Math.round(p) + '% used' : 'no data';
+  { const pc0 = has ? usagePace() : null; c.fillStyle = has ? thermoColor(Math.max(p, pc0 ? pc0.ratio * 100 : 0)) : '#666'; }
+  const pl = has ? Math.round(p) + '% used' : 'no data';
   fitFont(c, pl, 700, w * 0.15, maxW); c.fillText(pl, w / 2, h * 0.128);
   if (has) {
     c.fillStyle = 'rgba(255,255,255,0.5)'; const l2 = `$${Math.round(usage.spentUsd)} / $${Math.round(usage.limitUsd)}`;
     fitFont(c, l2, 500, w * 0.105, maxW); c.fillText(l2, w / 2, h * 0.158);
-    if (num(usage.daysLeft)) { const l3 = `${Math.max(0, Math.round(usage.daysLeft))}d left`; fitFont(c, l3, 500, w * 0.105, maxW); c.fillText(l3, w / 2, h * 0.183); }
+    const bn0 = usageBurn();
+    if (num(usage.daysLeft)) { const l3 = `${Math.max(0, Math.round(usage.daysLeft))}d left` + (bn0 ? ` · $${bn0.rate < 10 ? bn0.rate.toFixed(1) : Math.round(bn0.rate)}/d` : ''); fitFont(c, l3, 500, w * 0.105, maxW); c.fillText(l3, w / 2, h * 0.183); }
   }
-  // ---- glass geometry: ONE continuous outline, tube flares through a curved neck into the bulb ----
-  const cx = w * 0.56, tr = w * 0.17, br = tr * 1.6, top = h * 0.225, bulbY = h * 0.85;
-  const TH = 0.92;                                                  // where the neck meets the bulb (rad from top)
-  const bulbPath = (r0, b0) => {                                    // r0 = tube half-width, b0 = bulb radius
-    const sx = Math.sin(TH), cy = Math.cos(TH), px = b0 * sx, py = bulbY - b0 * cy, ny = py - r0 * 1.1, k = r0 * 0.6, k2 = b0 * 0.35;
-    c.beginPath(); c.moveTo(cx - r0, top); c.arc(cx, top, r0, Math.PI, 0);
-    c.lineTo(cx + r0, ny);
-    c.bezierCurveTo(cx + r0, ny + k, cx + px - cy * k2, py - sx * k2, cx + px, py);
-    c.arc(cx, bulbY, b0, -Math.PI / 2 + TH, Math.PI * 1.5 - TH);
-    c.bezierCurveTo(cx - px + cy * k2, py - sx * k2, cx - r0, ny + k, cx - r0, ny);
-    c.closePath();
-    return ny;
-  };
-  const inset = Math.max(2, w * 0.03);
-  const neckY = bulbY - br * Math.cos(TH) - tr * 1.1, bot = neckY;  // "0" = top of the neck; the bulb is the reserve
-  const len = bot - top, rem = clamp(1 - p / 100, 0, 1), level = bot - rem * len;
-  thermo.levelY = level;
-  // soft glow centred on the bulb (gentle 4 s breathing above 90%), kept inside the strip so it never hard-clips
-  const pulse = p > 90 ? 0.5 + 0.5 * Math.sin(T * Math.PI / 2) : 0.5;
-  const glowA = (p > 90 ? 0.22 + 0.3 * pulse : 0.24) * A, gr = Math.min(br * 2.2, (w - cx) * 0.98, cx * 0.98);
-  if (has && p < 100) {
-    const g = c.createRadialGradient(cx, bulbY, 0, cx, bulbY, gr);
-    g.addColorStop(0, rgbA(liq, glowA)); g.addColorStop(0.45, rgbA(liq, glowA * 0.55)); g.addColorStop(0.75, rgbA(liq, glowA * 0.18)); g.addColorStop(1, rgbA(liq, 0));
-    c.globalAlpha = 1; c.fillStyle = g; c.beginPath(); c.arc(cx, bulbY, gr, 0, Math.PI * 2); c.fill();
+  // ---- v1.16 transposed burn chart (same strip): time runs UP (day 1 at the bottom, month end at the top), $/day runs right.
+  // Lines: daily actuals (solid + dots), rolling 10-day average (smooth), dashed forecast at the 10-day rate to month end,
+  // faint dotted "limit pace" = the $/day that lands exactly on the limit. Outlier days are clipped at the axis cap and marked.
+  const lim = has ? usage.limitUsd : 0, pc = has ? usagePace() : null, over = !!(pc && pc.over);
+  const fPct = pc ? pc.ratio * 100 : p, stat = thermoColor(Math.max(p, fPct));
+  const bn = has ? usageBurn() : null;
+  const top = h * 0.245, bot = h * 0.895, len = bot - top, px0 = w * 0.24, px1 = w * 0.9, pw = px1 - px0;
+  const C_DAY = '#22D3EE', C_AVG = '#E879F9', C_NEED = '#4ADE80', C_FC = over ? '#EE5257' : fPct > 90 ? stat : '#F1F5F9';   // white on pace, amber near the limit, red over
+  const fs = w * 0.062, lw = Math.max(1.5, 1.25 * DPR);
+  // legend (two short colour-coded rows under the header)
+  c.globalAlpha = A; c.textBaseline = 'middle';
+  { const ly = h * 0.207, ly2 = h * 0.223, sw = w * 0.08, put = (x, y, col, dash, label) => {
+      c.strokeStyle = col; c.lineWidth = lw; c.setLineDash(dash); c.beginPath(); c.moveTo(x, y); c.lineTo(x + sw, y); c.stroke(); c.setLineDash([]);
+      c.fillStyle = 'rgba(255,255,255,0.55)'; c.textAlign = 'left'; c.font = `500 ${fs}px ${FONT_T}`; c.fillText(label, x + sw + w * 0.025, y); };
+    put(w * 0.06, ly, C_DAY, [], 'daily'); put(w * 0.5, ly, C_AVG, [], '10d avg');
+    put(w * 0.06, ly2, C_FC, [3 * DPR, 2.5 * DPR], 'forecast'); if (bn && lim) put(w * 0.5, ly2, C_NEED, [1 * DPR, 2.5 * DPR], 'limit pace'); }
+  if (has && bn) {
+    const N = bn.nDays, yT = t => bot - t / N * len;
+    const base = Math.max(bn.rate, ...bn.roll), rawMax = Math.max(base * 1.5, bn.need <= base * 2 ? bn.need * 1.15 : 0), sorted = bn.days.slice(0, bn.today + 1).sort((a, b) => a - b), p85 = sorted[Math.floor((sorted.length - 1) * 0.85)] || 0;
+    const nice = v => { const st = [10, 20, 25, 40, 50, 60, 80, 100, 150, 200, 250, 300, 400, 500, 750, 1000, 1500, 2000]; return st.find(x => x >= v) || Math.ceil(v / 1000) * 1000; };
+    const xmax = nice(Math.max(rawMax, p85, 5)), xX = v => px0 + clamp(v / xmax, 0, 1) * pw;
+    // plot frame: future rows faintly shaded, grid at 0 / half / cap
+    const yNow = yT(bn.elapsed);
+    c.fillStyle = 'rgba(255,255,255,0.035)'; c.fillRect(px0, top, pw, yNow - top);
+    for (const f of [0, 0.5, 1]) { c.fillStyle = f ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.3)'; c.fillRect(px0 + f * pw - DPR * 0.5, top, Math.max(1, DPR), len); }
+    c.fillStyle = 'rgba(255,255,255,0.45)'; c.textAlign = 'center'; c.font = `500 ${fs}px ${FONT_T}`;
+    c.fillText('$0', px0, bot + h * 0.013); c.fillText(fmtUsd(xmax / 2), px0 + pw / 2, bot + h * 0.013); c.fillText(fmtUsd(xmax) + '/d', px1 - w * 0.02, bot + h * 0.013);
+    // day labels on the left (1, 8, 15, 22, 29) and a faint 'today' line
+    const cs0 = new Date(usage.cycleStart), mon = cs0.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' });
+    c.textAlign = 'right';
+    for (const d of [1, 8, 15, 22, 29]) { if (d > N) continue; const yy = yT(d - 0.5); c.fillStyle = 'rgba(255,255,255,0.18)'; c.fillRect(px0 - w * 0.03, yy - 0.5 * DPR, w * 0.03, Math.max(1, DPR));
+      c.fillStyle = 'rgba(255,255,255,0.45)'; c.fillText(d === 1 ? `${mon} 1` : String(new Date(cs0.getTime() + (d - 1) * DAY_MS).getUTCDate()), px0 - w * 0.045, yy); }
+    c.fillStyle = 'rgba(255,255,255,0.3)'; c.fillText('end', px0 - w * 0.045, top);
+    c.setLineDash([2 * DPR, 3 * DPR]); c.strokeStyle = 'rgba(255,255,255,0.35)'; c.lineWidth = Math.max(1, DPR); c.beginPath(); c.moveTo(px0 - w * 0.03, yNow); c.lineTo(px1, yNow); c.stroke(); c.setLineDash([]);
+    c.fillStyle = 'rgba(255,255,255,0.6)'; c.font = `600 ${fs}px ${FONT_T}`; c.fillText('today', px0 - w * 0.045, yNow - fs * 0.9);
+    // (4) limit pace: from today to month end
+    const needOff = bn.need > xmax;                                  // limit pace off the axis: edge arrow + label only
+    if (bn.need > 0 && !needOff) { c.setLineDash([1 * DPR, 2.5 * DPR]); c.strokeStyle = cA(C_NEED, 0.75); c.lineWidth = lw; c.beginPath(); c.moveTo(xX(bn.need), yNow); c.lineTo(xX(bn.need), top); c.stroke(); c.setLineDash([]); }
+    // (3) forecast at the trailing 10-day rate, today -> month end
+    c.setLineDash([3.5 * DPR, 2.5 * DPR]); c.strokeStyle = C_FC; c.lineWidth = lw * 1.3; c.beginPath(); c.moveTo(xX(bn.rate), yNow); c.lineTo(xX(bn.rate), top); c.stroke(); c.setLineDash([]);
+    // (2) rolling 10-day average: smooth curve through day centres, ending at today's live rate
+    const rp = bn.roll.map((v, i) => [xX(v), i === bn.today ? yNow : yT(i + 0.5)]);
+    c.strokeStyle = C_AVG; c.lineWidth = lw * 1.6; c.lineJoin = 'round'; c.lineCap = 'round'; c.beginPath(); c.moveTo(rp[0][0], rp[0][1]);
+    for (let i = 1; i < rp.length; i++) { const [x0, y0] = rp[i - 1], [x1, y1] = rp[i], my = (y0 + y1) / 2; c.bezierCurveTo(x0, my, x1, my, x1, y1); }
+    c.stroke();
+    // (1) daily actuals: thin solid line + dots; days past the cap clip to the edge with a ▸ and their value
+    const dp = bn.days.slice(0, bn.today + 1).map((v, i) => [xX(v), yT(i + 0.5), v]);
+    c.strokeStyle = cA(C_DAY, 0.85); c.lineWidth = lw; c.beginPath(); dp.forEach(([x, y], i) => i ? c.lineTo(x, y) : c.moveTo(x, y)); c.stroke();
+    c.lineCap = 'butt'; c.lineJoin = 'miter';
+    const rr = Math.max(2, 1.7 * DPR);
+    dp.forEach(([x, y, v], i) => {
+      const live = i === bn.today, col = burnSegColor(Math.sqrt(v / bn.maxDay));
+      if (v > xmax) {
+        c.fillStyle = live ? C_FC : col; c.beginPath(); c.moveTo(px1 + rr * 2.4, y); c.lineTo(px1 - rr * 0.4, y - rr * 1.7); c.lineTo(px1 - rr * 0.4, y + rr * 1.7); c.closePath(); c.fill();
+        c.fillStyle = 'rgba(255,255,255,0.8)'; c.textAlign = 'right'; c.font = `700 ${fs}px ${FONT_T}`; c.fillText(fmtUsd(v) + (live ? '…' : ''), px1 - rr * 1.6, y);
+      } else if (live) { c.strokeStyle = col; c.lineWidth = Math.max(1.5, DPR); c.beginPath(); c.arc(x, y, rr * 1.2, 0, Math.PI * 2); c.stroke(); }
+      else { c.fillStyle = col; c.beginPath(); c.arc(x, y, rr, 0, Math.PI * 2); c.fill(); }
+    });
+    // line labels in the future band: forecast $/d right of its line, limit pace left of its line (staggered when close)
+    const xf = xX(bn.rate), xn = xX(bn.need), close = Math.abs(xf - xn) < w * 0.3, yA = top + (yNow - top) * (close ? 0.3 : 0.5), yB = top + (yNow - top) * (close ? 0.72 : 0.5);
+    c.font = `700 ${fs * 1.05}px ${FONT_T}`; c.fillStyle = C_FC;
+    const lf = `$${Math.round(bn.rate)}/d`, wf = c.measureText(lf).width;
+    if (xf + w * 0.03 + wf < px1 + w * 0.08) { c.textAlign = 'left'; c.fillText(lf, xf + w * 0.03, yA); } else { c.textAlign = 'right'; c.fillText(lf, xf - w * 0.03, yA); }
+    if (needOff) { c.font = `600 ${fs}px ${FONT_T}`; c.fillStyle = C_NEED; c.textAlign = 'right'; c.fillText(`$${Math.round(bn.need)} ▸`, px1 + w * 0.08, yB); }
+    else if (bn.need > 0) { c.font = `600 ${fs}px ${FONT_T}`; c.fillStyle = C_NEED; const ln = `$${Math.round(bn.need)}`, wn = c.measureText(ln).width;
+      if (xn - w * 0.03 - wn > px0) { c.textAlign = 'right'; c.fillText(ln, xn - w * 0.03, yB); } else { c.textAlign = 'left'; c.fillText(ln, xn + w * 0.03, yB); } }
+    thermo.levelY = yNow;
+  } else if (has) {                                                // no per-day data in the feed: a plain spend bar as fallback
+    thermo.levelY = bot - clamp(p / 100, 0, 1) * len;
+    c.fillStyle = cA(stat, 0.85); c.fillRect(w * 0.42, thermo.levelY, w * 0.16, bot - thermo.levelY);
+    c.strokeStyle = 'rgba(255,255,255,0.2)'; c.lineWidth = Math.max(1, DPR); c.strokeRect(w * 0.42, top, w * 0.16, len);
   }
-  // glass body: dark interior, lighter edges (inner shadow)
-  c.globalAlpha = A; bulbPath(tr, br);
-  const ig = c.createLinearGradient(cx - br, 0, cx + br, 0); ig.addColorStop(0, 'rgba(255,255,255,0.10)'); ig.addColorStop(0.35, 'rgba(255,255,255,0.02)'); ig.addColorStop(0.7, 'rgba(255,255,255,0.03)'); ig.addColorStop(1, 'rgba(255,255,255,0.12)');
-  c.fillStyle = ig; c.fill();
-  // liquid: ONE body clipped to the inner glass path, one vertical gradient, wave only on the top surface
-  c.save(); bulbPath(tr - inset, br - inset); c.clip();
-  if (p < 100) {
-    const lg = c.createLinearGradient(0, level, 0, bulbY + br);
-    lg.addColorStop(0, rgbA(liq, 0.95)); lg.addColorStop(0.5, rgbA(liq, 0.85)); lg.addColorStop(1, rgbA(liq, 0.62));
-    c.fillStyle = lg; c.beginPath();
-    const amp = level > top ? Math.min(w * 0.016, (bot - level) * 0.5 + w * 0.006) : 0, x0 = cx - br, x1 = cx + br;
-    c.moveTo(x0, bulbY + br + 2);
-    for (let i = 0; i <= 16; i++) { const x = x0 + (x1 - x0) * i / 16; c.lineTo(x, level + amp * Math.sin(i * 1.2 + T * 1.3)); }
-    c.lineTo(x1, bulbY + br + 2); c.closePath(); c.fill();
-    if (!idle) {                                                    // bubbles start in the bulb and rise through the neck
-      c.strokeStyle = 'rgba(255,255,255,0.35)'; c.lineWidth = Math.max(1, DPR);
-      const y0 = bulbY + br * 0.45, y1 = level + w * 0.04;
-      for (let i = 0; i < 5; i++) {
-        const per = 8 + i * 3.1, f = ((T + i * 4.7) % per) / per, by = y0 - f * (y0 - y1);
-        if (by < y1) continue;
-        const room = by > neckY ? (br - inset) * 0.5 * (1 - f * 0.3) : (tr - inset) * 0.55;   // wider wander in the bulb
-        const bx = cx + room * Math.sin(i * 2.1 + f * 5 + T * 0.4), rr = w * (0.013 + 0.006 * (i % 2));
-        c.beginPath(); c.arc(bx, by, rr, 0, Math.PI * 2); c.stroke();
-      }
-    }
-  }
-  // one shared highlight stripe: down the tube, through the neck, around the bulb's left curve
-  {
-    const hx = cx - tr * 0.55, hb = br * 0.7, a1 = Math.PI * 1.5 - TH * 0.95, a2 = Math.PI * 1.02;
-    const ex = cx + hb * Math.cos(a1), ey = bulbY + hb * Math.sin(a1);
-    const hg = c.createLinearGradient(0, top, 0, bulbY + br * 0.3);
-    hg.addColorStop(0, 'rgba(255,255,255,0.05)'); hg.addColorStop(0.2, 'rgba(255,255,255,0.2)'); hg.addColorStop(0.85, 'rgba(255,255,255,0.18)'); hg.addColorStop(1, 'rgba(255,255,255,0)');
-    c.strokeStyle = hg; c.lineWidth = tr * 0.2; c.lineCap = 'round';
-    c.beginPath(); c.moveTo(hx, top - tr * 0.2); c.lineTo(hx, neckY);
-    c.bezierCurveTo(hx, neckY + tr * 0.7, ex + tr * 0.25, ey - tr * 0.5, ex, ey);
-    c.arc(cx, bulbY, hb, a1, a2, true);
-    c.stroke(); c.lineCap = 'butt';
-  }
-  c.restore();
-  // glass outline (same single path)
-  c.globalAlpha = A; c.strokeStyle = p >= 100 ? '#EE5257' : 'rgba(255,255,255,0.5)'; c.lineWidth = Math.max(1.5, 1.6 * DPR); bulbPath(tr, br); c.stroke();
-  // segmented ticks (every 10%), labelled full / half / empty
-  const tx1 = cx - tr - w * 0.035;
-  for (let i = 0; i <= 10; i++) {
-    const y = bot - (i / 10) * len, major = i % 5 === 0, L = major ? w * 0.11 : w * 0.06;
-    c.fillStyle = major ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.3)';
-    c.fillRect(tx1 - L, y - (major ? 1.5 : 1) * DPR / 2, L, (major ? 1.5 : 1) * DPR);
-  }
-  c.fillStyle = 'rgba(255,255,255,0.55)'; c.textAlign = 'right';
-  const lx = tx1 - w * 0.13;
-  fitFont(c, 'full', 600, w * 0.085, w * 0.2); c.fillText('full', lx, top);
-  c.fillText('½', lx, bot - len / 2); c.fillText('0', lx, bot);
-  // pace ghost: where the level would be today if spend were even across the cycle (from cycle dates)
-  const cs = has && Date.parse(usage.cycleStart), ce = has && Date.parse(usage.cycleEnd);
-  if (isFinite(cs) && isFinite(ce) && ce > cs) {
-    const f = clamp((Date.now() - cs) / (ce - cs), 0, 1), py = bot - (1 - f) * len, k = w * 0.055, px = cx + tr + w * 0.03;
-    c.setLineDash([3 * DPR, 3 * DPR]); c.strokeStyle = 'rgba(255,255,255,0.55)'; c.lineWidth = Math.max(1, DPR);
-    c.beginPath(); c.moveTo(cx - tr, py); c.lineTo(cx + tr, py); c.stroke(); c.setLineDash([]);
-    c.beginPath(); c.moveTo(px, py); c.lineTo(px + k * 1.4, py - k * 0.8); c.lineTo(px + k * 1.4, py + k * 0.8); c.closePath(); c.stroke();
-    c.save(); c.translate(px + k * 0.9, py - k * 1.9); c.rotate(-Math.PI / 2); c.textAlign = 'left'; c.fillStyle = 'rgba(255,255,255,0.5)'; fitFont(c, 'pace', 600, w * 0.07, w); c.fillText('pace', 0, 0); c.restore();
-  }
-  // projected end of cycle: a thin notch on the tick scale (red at "0" when it beats the limit) + text line at the bottom
+  const level = thermo.levelY || bot;
+  // projection footer
   c.textAlign = 'center';
-  if (has && num(usage.projectedUsd)) {
-    const pr = usage.projectedUsd, pc = usagePace(), over = pc.over;
-    const yy = over ? bot : bot - (1 - pr / usage.limitUsd) * len;
-    c.fillStyle = over ? '#EE5257' : 'rgba(255,255,255,0.75)';
-    c.beginPath(); c.moveTo(tx1 + w * 0.012, yy); c.lineTo(tx1 - w * 0.05, yy - w * 0.035); c.lineTo(tx1 - w * 0.05, yy + w * 0.035); c.closePath(); c.fill();
-    // v1.12: projected end-of-cycle figure, then ONE status line: red 'hits limit ~Thu' when the pace beats the limit, else 'on pace'
-    c.fillStyle = 'rgba(255,255,255,0.75)'; const l4 = `proj $${Math.round(pr)}`; fitFont(c, l4, 700, w * 0.11, maxW); c.fillText(l4, w / 2, h * 0.946);
+  if (has && pc) {
+    const pr = pc.proj;
+    c.fillStyle = over ? '#EE5257' : fPct > 90 ? stat : 'rgba(255,255,255,0.75)'; const l4 = `proj $${Math.round(pr).toLocaleString('en-US')}` + ` (${pr >= lim ? '+' : '-'}$${Math.round(Math.abs(pr - lim)).toLocaleString('en-US')})`;
+    fitFont(c, l4, 700, w * 0.11, maxW); c.fillText(l4, w / 2, h * 0.946);
     const l5 = over ? hitLabel(pc) : 'on pace';
     c.fillStyle = over ? '#EE5257' : 'rgba(255,255,255,0.5)'; fitFont(c, l5, over ? 700 : 500, w * 0.095, maxW); c.fillText(l5, w / 2, h * 0.972);
     c.fillStyle = 'rgba(255,255,255,0.6)';
