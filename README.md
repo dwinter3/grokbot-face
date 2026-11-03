@@ -87,7 +87,7 @@ The pumpkin is a flat orange Grok Bot with a lobed bottom and a curly stem. At r
 
 It also dresses up: **witch, Dracula, Groucho glasses, pirate, Frankenstein, mummy, ghost, wizard, devil and skeleton**, plus a plain pumpkin now and then. Every costume is drawn as flat canvas shapes layered over the pumpkin. Masks have eye holes, glasses sit around the eyes, the pirate's patch covers one eye, and costumes rock along with the pumpkin. It changes costume every 2–4 minutes in a puff of smoke, or when you tap it. Each change shows a pun for a few seconds, like *"Fangs for visiting!"* and *"Gourd to the bone"*.
 
-Oct 25 – Nov 1 the pumpkin is the opening look and comes up often. In October it's part of auto-rotation. The rest of the year it's a swipe away. `?halloween=1` forces Halloween mode for testing, and `?theme=pumpkin` jumps straight to it.
+The pumpkin is seasonal. Oct 25 – 31 it's the opening look and comes up often, and all of October it's in auto-rotation and the swipe list. From Nov 1 it's gone (no swipes, no rotation) until next October. The date is checked live, so a tablet that's been running for days lets it go at midnight without a restart. `?halloween=1` forces Halloween mode for testing, `?halloween=0` turns it off, and `?theme=pumpkin` jumps straight to it.
 
 <table>
 <tr>

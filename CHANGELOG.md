@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.18.0 (2026-11-03): Halloween ends on Oct 31
+- The Halloween window now ends Oct 31: the pumpkin opens the app Oct 25 – 31 and is in rotation and the swipe list for October only.
+- The date is checked live every 20 s instead of once at load. A tablet that runs for days drops Halloween at midnight Nov 1; if the pumpkin is on screen it switches to the pills face.
+- Outside October the pumpkin is gone from swipes, double-tap cycling and auto-rotation. The pumpkin and costume code stays, so it all comes back next October. `?halloween=1|0` still overrides.
+- Swipe position is now looked up in the actual list of looks, so swiping works with or without the pumpkin.
+- `tests/v118-halloween-test.js` checks today, the override, Oct 1, and the Oct 31 → Nov 1 rollover without a reload.
+
 ## 1.17.0 (2026-10-27): bottom burn strip + datacenter cutscene
 - The burn chart moves from the right edge to a slim horizontal strip along the bottom. Days run left to right; same lines, colors and footer as 1.16 ("left / % used" on the left, `proj $X (±$Y)` and pace on the right).
 - The face canvas stops above the strip, so the face gets its full width back. Glancing at spend now looks down instead of sideways.

@@ -73,11 +73,23 @@ const Q = new URLSearchParams(location.search);
 const APP = Q.get('app') === '1' || /GrokBotFace/.test(navigator.userAgent);
 const BLOB_COLORS = ['#1A86FF', '#FF6A2B', '#2BC46B', '#8B5CF6'];
 const THEMES = ['pills', 'blob', 'pumpkin', 'chars', 'clock', 'pong', 'chess', 'checkers', 'pacman', 'news', 'harness'];
-// v1.13: Grok Bot pumpkin. Halloween week (Oct 25 - Nov 1) it is the opening look and a frequent pick; Oct 1 - Nov 1 it
-// joins auto-rotation; the rest of the year it stays a swipe away. ?halloween=1|0 forces the window for testing.
-const HALLOWEEN = (() => { const d = new Date(), m = d.getMonth(), day = d.getDate(), f = Q.get('halloween');
-  const week = f ? f === '1' : (m === 9 && day >= 25) || (m === 10 && day <= 1);
-  return { week, season: f ? f === '1' : week || m === 9 }; })();
+// v1.13: Grok Bot pumpkin. Halloween week (Oct 25 - 31) it is the opening look and a frequent pick; all of October it
+// joins auto-rotation and the swipe list. v1.18: outside October it is gone entirely (not in swipes or rotation) and comes
+// back next October. The date is re-checked live (halloweenTick) so a tablet that runs for days drops it at midnight Nov 1.
+// ?halloween=1|0 forces the window for testing.
+function halloweenNow() { const f = Q.get('halloween'); if (f) return { week: f === '1', season: f === '1' };
+  const d = new Date(), m = d.getMonth(), day = d.getDate(); return { week: m === 9 && day >= 25, season: m === 9 }; }
+let HALLOWEEN = halloweenNow(), hwCheckAt = 0;
+function halloweenTick() {                                         // every frame; real work every 20 s
+  if (now < hwCheckAt) return; hwCheckAt = now + 20;
+  HALLOWEEN = halloweenNow();
+  if (HALLOWEEN.season || Q.get('theme') === 'pumpkin') return;
+  const goingPk = trans && (trans.to === 'pumpkin' || (trans.look && trans.look.theme === 'pumpkin'));
+  if (theme !== 'pumpkin' && !goingPk) return;
+  if (sleeping && !trans) { theme = 'pills'; scheduleTheme(); return; }   // asleep: swap quietly, wakes up as pills
+  if (trans || adv || bk.on || card.open || rps.on) { hwCheckAt = now + 1; return; }   // retry once the screen is free
+  switchTheme('pills');
+}
 let theme = THEMES.includes(Q.get('theme')) ? Q.get('theme') : HALLOWEEN.week ? 'pumpkin' : 'pills';
 let colorIdx = Math.floor(Math.random() * BLOB_COLORS.length);
 let trans = null;            // {start, dur, to}
@@ -140,7 +152,7 @@ function rotateTick() {                                              // called e
 }
 function switchTheme(to, spec) {
   if (trans) return;
-  if (!to) { let i = THEMES.indexOf(theme), n = 0; do { i = (i + 1) % THEMES.length; } while (isNewsTheme(THEMES[i]) && !newsReady() && ++n < THEMES.length); to = THEMES[i]; }
+  if (!to) { let i = THEMES.indexOf(theme), n = 0; do { i = (i + 1) % THEMES.length; } while (((isNewsTheme(THEMES[i]) && !newsReady()) || (THEMES[i] === 'pumpkin' && !HALLOWEEN.season)) && ++n < THEMES.length); to = THEMES[i]; }
   if (to === theme && !(to === 'chars' && spec)) return;
   trans = { start: now, dur: 2.6, to, swapped: false, spec: spec || null };
   move = null;
@@ -148,19 +160,16 @@ function switchTheme(to, spec) {
 const backOut = x => { const c = 1.9; x = clamp(x, 0, 1) - 1; return 1 + (c + 1) * x * x * x + c * x * x; };
 // ---------- swipe between looks (v1.3) ----------
 let swipeX = 0, swipeSq = 0, swipeRot = 0;
-function looks() { return [{ theme: 'pills' }, { theme: 'blob' }, { theme: 'pumpkin' }].concat(ROSTER.map(c => ({ theme: 'chars', char: c })), [{ theme: 'pong' }], GAME_THEMES.map(t => ({ theme: t })), newsReady() ? NEWS_THEMES.map(t => ({ theme: t })) : []); }
-function currentLook() {
-  if (theme === 'pills') return 0; if (theme === 'blob') return 1; if (theme === 'pumpkin') return 2;
-  if (theme === 'chars' && cast[0]) return 3 + ROSTER.indexOf(cast[0]);
-  if (theme === 'pong') return 3 + ROSTER.length;
-  if (isGameTheme(theme)) return 4 + ROSTER.length + GAME_THEMES.indexOf(theme);
-  if (isNewsTheme(theme) && newsReady()) return 4 + ROSTER.length + GAME_THEMES.length + NEWS_THEMES.indexOf(theme);
-  return -1;                                                       // clock
+function looks() { return [{ theme: 'pills' }, { theme: 'blob' }].concat(HALLOWEEN.season ? [{ theme: 'pumpkin' }] : [], ROSTER.map(c => ({ theme: 'chars', char: c })), [{ theme: 'pong' }], GAME_THEMES.map(t => ({ theme: t })), newsReady() ? NEWS_THEMES.map(t => ({ theme: t })) : []); }
+function currentLook(L) {                                          // v1.18: index into looks() itself (pumpkin is seasonal)
+  L = L || looks();
+  if (theme === 'chars') return cast[0] ? L.findIndex(l => l.theme === 'chars' && l.char === cast[0]) : -1;
+  return L.findIndex(l => l.theme === theme);                      // -1 = clock (or pumpkin out of season)
 }
 function swipeTo(dir) {                                            // dir: +1 next (swipe left), -1 previous (swipe right)
   if (trans) return;
   if (rps.on) rpsEnd('swipe');                                     // v1.12: a swipe ends the game
-  const L = looks(), i = currentLook(), n = L.length;
+  const L = looks(), i = currentLook(L), n = L.length;
   const j = i < 0 ? (dir > 0 ? 0 : n - 1) : (i + dir + n) % n;
   if (adv) advCancel();                                            // a swipe always wins over an adventure
   trans = { kind: 'swipe', start: now, dur: 1.15, look: L[j], exit: -dir, swapped: false };
@@ -1785,6 +1794,7 @@ function frame(ms) {
   dtFrame = dt;
   updateTransition();
   presUpdate();
+  halloweenTick();                                                   // v1.18: live date check, pumpkin leaves after Oct 31
   rpsTick();                                                         // v1.12 rock-paper-scissors
   const s = resetTarget(tgt);
 
@@ -4273,7 +4283,7 @@ function newsExpose() {
     newsRects: nl.rects.map(r => ({ x0: r.x0 / DPR, x1: r.x1 / DPR, y0: r.y0 / DPR, y1: r.y1 / DPR, title: r.item.title })),
     tiles: hb.rects.map(r => ({ x0: r.x0 / DPR, x1: r.x1 / DPR, y0: r.y0 / DPR, y1: r.y1 / DPR, title: r.item.title })),
     btn: bk.btn && { x0: bk.btn.x0 / DPR, x1: bk.btn.x1 / DPR, y0: bk.btn.y0 / DPR, y1: bk.btn.y1 / DPR } }) });
-  G.ROTATE = ROTATE; G.rotatePick = rotatePick; Object.defineProperty(G, 'pk', { get: () => Object.assign({ halloween: HALLOWEEN }, pk) }); G.costumes = COSTUMES.map(c => c.id); Object.defineProperty(G, 'pkPos', { get: () => lay && lay.pk ? { x: lay.pk.x / DPR, y: lay.pk.y / DPR } : null }); G.costume = (id, poof) => { pkc.lastTheme = 'pumpkin'; pkSwap(typeof id === 'string' ? COSTUME_BY_ID[id] : id, !!poof); return COSTUMES[pkc.cur].id; }; Object.defineProperty(G, 'pkc', { get: () => ({ cur: COSTUMES[pkc.cur].id, cap: pkc.cap, next: +(pkc.next - now).toFixed(1), tapAt: pkc.tapAt }) }); G.pkBurst = s => { pk.burstUntil = now + (s || 4); pk.burstNext = pk.burstUntil + 30; }; G.pkCalm = () => { pk.burstUntil = 0; pk.burstNext = now + 1e6; move = null; nextMoveAt = now + 1e6; }; Object.defineProperty(G, 'rot', { get: () => ({ lastKey: rot.lastKey, games: rot.games.slice(), lastGameAt: rot.lastGameAt, next: +(nextThemeAt - now).toFixed(1), picks: rot.picks.slice() }) });
+  G.ROTATE = ROTATE; G.rotatePick = rotatePick; Object.defineProperty(G, 'pk', { get: () => Object.assign({ halloween: HALLOWEEN }, pk) }); G.costumes = COSTUMES.map(c => c.id); G.looks = () => looks().map(l => l.theme + (l.char ? ':' + l.char.name : '')); G.halloweenTick = () => { hwCheckAt = 0; halloweenTick(); return HALLOWEEN; }; Object.defineProperty(G, 'pkPos', { get: () => lay && lay.pk ? { x: lay.pk.x / DPR, y: lay.pk.y / DPR } : null }); G.costume = (id, poof) => { pkc.lastTheme = 'pumpkin'; pkSwap(typeof id === 'string' ? COSTUME_BY_ID[id] : id, !!poof); return COSTUMES[pkc.cur].id; }; Object.defineProperty(G, 'pkc', { get: () => ({ cur: COSTUMES[pkc.cur].id, cap: pkc.cap, next: +(pkc.next - now).toFixed(1), tapAt: pkc.tapAt }) }); G.pkBurst = s => { pk.burstUntil = now + (s || 4); pk.burstNext = pk.burstUntil + 30; }; G.pkCalm = () => { pk.burstUntil = 0; pk.burstNext = now + 1e6; move = null; nextMoveAt = now + 1e6; }; Object.defineProperty(G, 'rot', { get: () => ({ lastKey: rot.lastKey, games: rot.games.slice(), lastGameAt: rot.lastGameAt, next: +(nextThemeAt - now).toFixed(1), picks: rot.picks.slice() }) });
   G.rotSim = n => { const c = {}, k = {}; const saveKey = rot.lastKey, saveG = rot.lastGameAt, saveGames = rot.games.slice(); let lastGame = -1e9, t = 0; for (let i = 0; i < n; i++) { rot.lastGameAt = lastGame - t + now; const L = rotatePick(); const cat = rot.picks[rot.picks.length - 1]; c[cat] = (c[cat] || 0) + 1; if (L.key === rot.lastKey) k.repeat = (k.repeat || 0) + 1; rot.lastKey = L.key; const dw = cat === 'games' ? 240 : 180; if (cat === 'games') { if (t - lastGame < ROTATE.gameGapSec) k.gapViolation = (k.gapViolation || 0) + 1; lastGame = t; rot.games.push(L.theme); if (rot.games.length > 2) rot.games.shift(); } t += dw; } rot.lastKey = saveKey; rot.lastGameAt = saveG; rot.games = saveGames; rot.picks.length = 0; const tot = n; for (const x in c) c[x] = +(100 * c[x] / tot).toFixed(1); return { pct: c, k }; };
   G.newsTest = { set: (k, v) => { if (k === 'last') bk.last = v; if (k === 'armed') newsArmed = v; }, quietHours, someoneHere, pres: st => presSet(st), get front() { return tk.front.slice(); } };
 }
