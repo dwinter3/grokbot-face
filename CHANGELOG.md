@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- Rock-paper-scissors: after a throw is read, phase `showdown` (same 2.7 s as the old text reveal) shows both hands side by side, labeled YOU and GROK, then a clash. Rock smashes scissors, paper wraps rock, scissors cut paper, and a tie bumps and rebounds. A YOU WIN / GROK WINS / TIE banner comes in with the hit. The score line ticks after that, at `RPS.scoreAt`. Who won, and when the game ends, are unchanged. A swipe still ends the game.
+- Debug: `?rpsReveal=rock,scissors` jumps straight into that showdown (player throw, bot throw). `&rpsAt=1.6` freezes the phase clock so it can be screenshotted. `tests/v119-rps-showdown.js`.
+
 ## 1.18.0 (2026-11-03): Halloween ends on Oct 31
 - The Halloween window now ends Oct 31: the pumpkin opens the app Oct 25 – 31 and is in rotation and the swipe list for October only.
 - The date is checked live every 20 s instead of once at load. A tablet that runs for days drops Halloween at midnight Nov 1; if the pumpkin is on screen it switches to the pills face.
