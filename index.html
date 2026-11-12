@@ -864,6 +864,10 @@ gv.addEventListener('pointerdown', e => {                          // tap the ga
 // at the start of each round, before any hand frame of that round is read. Nothing leaves the device.
 // Triggers: hold up a fist ~0.7 s while someone is at the desk, tap the little clock (or the invitation chip),
 // an occasional invitation, or adb `--es look rps` / ?rps=1.  adb `--es look rpsfist` replays a synthetic fist (test).
+// Once a throw is read, phase `showdown` (same 2.7 s slot the old text reveal used) puts both hands side by side
+// (YOU / GROK), then the clash: rock smashes scissors, paper wraps rock, scissors cut paper, a tie bumps and rebounds.
+// A YOU WIN / GROK WINS / TIE banner lands as the hit connects; the score line ticks at RPS.scoreAt. Swipe still ends it.
+// Debug: ?rpsReveal=rock,scissors jumps straight into that showdown (player,bot). &rpsAt=1.6 freezes the phase clock.
 // Hands run every frame while a game or a fist hold is on; otherwise ~5 fps while a face was seen in the last 8 s.
 // v1.12.1: v1.12 only accepted frames the canned model labelled Closed_Fist > 0.6 *and* a visible face; a fist held up
 // knuckles-forward mostly comes back as 'None' with every finger curled, and it hides the face, so it never fired.
@@ -873,11 +877,22 @@ gv.addEventListener('pointerdown', e => {                          // tap the ga
 const RPS = { triggerHoldSec: 1.0, triggerScore: 0.55, triggerMinFrames: 5, triggerRatio: 0.7, triggerGapSec: 0.35, faceSec: 2.0,
   minBox: 0.10, noneMinBox: 0.16, noneMinScore: 0.7, noneMinConf: 0.85, presentSec: 8,
   rematchSec: 20, cooldownSec: 120, idleCooldownSec: 600, inviteEvery: [1500, 2700], inviteSec: 9,
-  introSec: 1.9, beatSec: 0.62, readSec: 1.0, revealSec: 2.7, missSec: 2.4, finalSec: 3.6, toWin: 2, maxRounds: 6, maxMisses: 2 };
+  introSec: 1.9, beatSec: 0.62, readSec: 1.0, revealSec: 2.7, showdownSec: 2.7, sdArrive: 0.4, sdHold: 0.7, sdClash: 1.75, scoreAt: 2.05, missSec: 2.4, finalSec: 3.6, toWin: 2, maxRounds: 6, maxMisses: 2 };
 const RPS_THROWS = ['rock', 'paper', 'scissors'];
 const RPS_BEATS = { rock: 'scissors', paper: 'rock', scissors: 'paper' };
+// shatter slices of the offscreen hand (fractions of that canvas). reused every frame, no allocation.
+const RPS_SHARDS = [
+  { x: 0.30, y: 0.14, w: 0.20, h: 0.20, dx: -1.05, dy: -1.20, rot: -0.9 },
+  { x: 0.50, y: 0.13, w: 0.20, h: 0.21, dx: 1.00, dy: -1.25, rot: 0.75 },
+  { x: 0.28, y: 0.33, w: 0.22, h: 0.18, dx: -1.30, dy: -0.10, rot: -0.4 },
+  { x: 0.50, y: 0.33, w: 0.22, h: 0.18, dx: 1.25, dy: 0.15, rot: 0.50 },
+  { x: 0.32, y: 0.50, w: 0.18, h: 0.18, dx: -0.80, dy: 1.15, rot: -1.0 },
+  { x: 0.51, y: 0.50, w: 0.19, h: 0.18, dx: 0.90, dy: 1.20, rot: 0.95 }
+];
 const rps = { on: false, phase: '', t0: 0, round: 0, me: 0, you: 0, misses: 0, bot: '', player: '', result: '', votes: { rock: 0, paper: 0, scissors: 0 },
-  lastSeq: 0, reads: 0, rematchUntil: 0, fistSince: 0, fistLast: 0, fistN: 0, fistMiss: 0, fistSeq: -1, faceAt: -9, sim: null, coolUntil: 0, inviteNext: 0, invite: -1e9, mock: Q.get('rpsMock') || null, forceBot: null, why: '', hist: [] };
+  lastSeq: 0, reads: 0, rematchUntil: 0, fistSince: 0, fistLast: 0, fistN: 0, fistMiss: 0, fistSeq: -1, faceAt: -9, sim: null, coolUntil: 0, inviteNext: 0, invite: -1e9, mock: Q.get('rpsMock') || null, forceBot: null, why: '', hist: [], pin: null };
+const sdHand = () => ({ x: 0, y: 0, rot: 0, sc: 1, sx: 1, sy: 1, a: 1, shards: 0, split: 0 });
+const sdPose = { R: 0, you: sdHand(), bot: sdHand(), flash: 0, slash: 0, hx: 0, hy: 0, banner: 0 };
 function rpsRandomThrow() {
   if (rps.forceBot && RPS_THROWS.includes(rps.forceBot)) return rps.forceBot;            // test hook only
   try { const a = new Uint32Array(1); for (;;) { crypto.getRandomValues(a); if (a[0] < 4294967295 - (4294967295 % 3)) return RPS_THROWS[a[0] % 3]; } }
@@ -923,13 +938,13 @@ function rpsStart(why) {
   if (rps.on) return false;
   if (adv) advCancel(); if (card.open) closeCard(); if (trans) { trans = null; enter = 1; swipeX = swipeSq = swipeRot = 0; }
   sleeping = false; move = null; lookOverride = null;
-  Object.assign(rps, { on: true, phase: 'intro', t0: now, round: 0, me: 0, you: 0, misses: 0, bot: '', player: '', result: '', why: why || 'debug', fistSince: 0, fistN: 0, fistMiss: 0, reads: 0, rematchUntil: 0, invite: -1e9 });
+  Object.assign(rps, { on: true, phase: 'intro', t0: now, round: 0, me: 0, you: 0, misses: 0, bot: '', player: '', result: '', why: why || 'debug', fistSince: 0, fistN: 0, fistMiss: 0, reads: 0, rematchUntil: 0, invite: -1e9, pin: null });
   if (APP) console.info('perf rps start ' + (why || 'debug'));
   lastInput = now; return true;
 }
 function rpsEnd(why) {
   if (!rps.on) return;
-  rps.on = false; rps.phase = '';
+  rps.on = false; rps.phase = ''; rps.pin = null;
   // nobody actually played (no throw read, or swiped away): long rest, no rematch; otherwise a short fist-rematch window
   const idle = rps.reads === 0 && why !== 'debug';
   rps.coolUntil = now + (idle ? RPS.idleCooldownSec : RPS.cooldownSec);
@@ -944,7 +959,7 @@ function rpsRound() {
   rps.votes.rock = rps.votes.paper = rps.votes.scissors = 0; rps.lastSeq = SENSE.handSeq || 0;
   rps.phase = 'count'; rps.t0 = now;
 }
-function rpsPhaseT() { return now - rps.t0; }
+function rpsPhaseT() { return rps.pin != null ? rps.pin : now - rps.t0; }
 const rpsShootAt = () => RPS.beatSec * 3;
 function rpsTick() {                                                   // every frame (awake or asleep)
   SENSE.handsBoost = rps.on || !!rps.fistSince;
@@ -969,8 +984,15 @@ function rpsTick() {                                                   // every 
       rps.result = best === rps.bot ? 'tie' : RPS_BEATS[rps.bot] === best ? 'bot' : 'you';
       if (rps.result === 'bot') rps.me++; else if (rps.result === 'you') rps.you++;
       rps.hist.push({ bot: rps.bot, player: best, result: rps.result }); if (rps.hist.length > 50) rps.hist.shift();
-      rps.phase = 'reveal'; rps.t0 = now;
+      rps.phase = 'showdown'; rps.t0 = now;                          // same exit rules as the old reveal; the score is already counted
     }
+    return;
+  }
+  if (rps.phase === 'showdown') {
+    if (rps.pin != null) return;                                     // ?rpsAt= freezes the clock for a screenshot
+    if (t < RPS.showdownSec) return;
+    const done = rps.me >= RPS.toWin || rps.you >= RPS.toWin || rps.round >= RPS.maxRounds || rps.misses >= RPS.maxMisses;
+    if (done) { rps.phase = 'final'; rps.t0 = now; } else rpsRound();
     return;
   }
   if (rps.phase === 'reveal' || rps.phase === 'miss') {
@@ -1030,7 +1052,7 @@ function rpsApply(s) {                                                 // face d
     }
     return;
   }
-  if (rps.phase === 'reveal') {
+  if (rps.phase === 'reveal' || rps.phase === 'showdown') {
     if (rps.result === 'bot') { M.happy.apply(s, Math.min(t, 2.1)); s.frot += 0.12 * Math.sin(t * 13) * (1 - ease((t - 1.8) / 0.6)); s.lx = -0.2; }   // gloat
     else if (rps.result === 'you') { M.sigh.apply(s, Math.min(t, 2.35)); s.lx = -0.35; }          // sulk
     else M.shrug.apply(s, Math.min(t, 1.65));                                                      // tie: shrug
@@ -1053,7 +1075,7 @@ function rpsPill(x, y, w, h, rot) { ctx.save(); ctx.translate(x, y); ctx.rotate(
 // Rendered at full opacity into a small offscreen canvas (seams cut with destination-out), then blitted with alpha,
 // so a faded hand never shows its overlapping parts.
 const rpsHandCv = document.createElement('canvas'), rpsHandCtx = rpsHandCv.getContext('2d');
-function drawRpsHand(kind, x, y, R, rot, sc, col, alpha) {
+function drawRpsHand(kind, x, y, R, rot, sc, col, alpha, opt) {
   const pad = Math.ceil(R * 2.2), size = pad * 2;
   if (rpsHandCv.width !== size) { rpsHandCv.width = size; rpsHandCv.height = size; } else rpsHandCtx.clearRect(0, 0, size, size);
   const g = rpsHandCtx, main = ctx;
@@ -1086,8 +1108,29 @@ function drawRpsHand(kind, x, y, R, rot, sc, col, alpha) {
     }
     g.restore();
   } finally { ctx = main; }
-  ctx.save(); ctx.globalAlpha *= alpha == null ? 1 : alpha; ctx.translate(x, y); ctx.rotate(rot || 0); ctx.scale(sc || 1, sc || 1);
-  ctx.drawImage(rpsHandCv, -pad, -pad); ctx.restore();
+  const scx = (sc == null ? 1 : sc) * (opt && opt.sx != null ? opt.sx : 1);
+  const scy = (sc == null ? 1 : sc) * (opt && opt.sy != null ? opt.sy : 1);
+  ctx.save(); ctx.globalAlpha *= alpha == null ? 1 : alpha; ctx.translate(x, y); ctx.rotate(rot || 0); ctx.scale(scx, scy);
+  if (opt && opt.shards > 0.001) {                                   // rock: the loser breaks into the same hand, flying apart
+    const p = opt.shards, bodyA = Math.max(0, 1 - p * 3.2);
+    if (bodyA > 0.04) { ctx.save(); ctx.globalAlpha *= bodyA; ctx.drawImage(rpsHandCv, -pad, -pad); ctx.restore(); }
+    const pieceA = Math.min(1, p * 3) * Math.max(0, 1 - p * 0.75);
+    if (pieceA > 0.03) {
+      const size = rpsHandCv.width;
+      for (let i = 0; i < RPS_SHARDS.length; i++) {
+        const s = RPS_SHARDS[i], ssx = s.x * size, ssy = s.y * size, sw = s.w * size, sh = s.h * size, fly = p * (0.65 + 0.35 * p);
+        ctx.save(); ctx.globalAlpha *= pieceA; ctx.translate(s.dx * fly * R * 2.5, s.dy * fly * R * 2.5); ctx.rotate(s.rot * p);
+        ctx.drawImage(rpsHandCv, ssx, ssy, sw, sh, -pad + ssx, -pad + ssy, sw, sh); ctx.restore();
+      }
+    }
+  } else if (opt && opt.split > 0.001) {                             // scissors: the loser is cut and the halves fall away
+    const p = opt.split, g = p * R * 1.85, fade = 1 - Math.max(0, p - 0.4) * 0.9, size = rpsHandCv.width;
+    ctx.save(); ctx.translate(-g * 0.45, -g); ctx.rotate(-0.35 * p); ctx.globalAlpha *= fade;
+    ctx.beginPath(); ctx.rect(-pad - 8, -pad - 8, size + 16, pad + 8); ctx.clip(); ctx.drawImage(rpsHandCv, -pad, -pad); ctx.restore();
+    ctx.save(); ctx.translate(g * 0.55, g); ctx.rotate(0.4 * p); ctx.globalAlpha *= fade;
+    ctx.beginPath(); ctx.rect(-pad - 8, -8, size + 16, pad + 16); ctx.clip(); ctx.drawImage(rpsHandCv, -pad, -pad); ctx.restore();
+  } else ctx.drawImage(rpsHandCv, -pad, -pad);
+  ctx.restore();
 }
 function rpsTextFit(text, weight, px, maxW) { ctx.font = fnt(weight, px); const w = ctx.measureText(text).width; if (w > maxW) ctx.font = fnt(weight, px * maxW / w); }
 function rpsBanner() {
@@ -1110,8 +1153,115 @@ function rpsBanner() {
   }
   return { big: '', sub: '', k: 1 };
 }
+function sdClear(p, x, y) { p.x = x; p.y = y; p.rot = 0; p.sc = 1; p.sx = 1; p.sy = 1; p.a = 1; p.shards = 0; p.split = 0; }
+function rpsShownScore() {                                            // the line lags the counted score until the showdown's score beat
+  let me = rps.me, you = rps.you;
+  if (rps.phase === 'showdown' && rpsPhaseT() < RPS.scoreAt) {
+    if (rps.result === 'you') you = Math.max(0, you - 1); else if (rps.result === 'bot') me = Math.max(0, me - 1);
+  }
+  return { me: me, you: you };
+}
+function rpsShowdownPose(t) {
+  const P = sdPose, R = P.R = Math.min(H * 0.145, W * 0.108), y = H * 0.56;
+  const xL = W * 0.27, xR = W * 0.73, you = P.you, bot = P.bot, gap = xR - xL, meet = (xL + xR) / 2;
+  sdClear(you, xL, y); sdClear(bot, xR, y);
+  P.flash = 0; P.slash = 0; P.hx = meet; P.hy = y; P.banner = 0;
+  const ain = backOut(clamp(t / RPS.sdArrive, 0, 1));
+  you.x = xL * ain - (1 - ain) * R * 1.8; bot.x = xR * ain + (1 - ain) * (W + R * 1.8);
+  you.a = bot.a = Math.min(1, t / 0.18); you.sc = bot.sc = 0.88 + 0.12 * ain;
+  const u = clamp((t - RPS.sdHold) / RPS.sdClash, 0, 1);
+  P.banner = backOut(clamp((t - RPS.sdHold - RPS.sdClash * 0.28) / 0.3, 0, 1));
+  if (u <= 0) return P;
+  if (rps.result === 'tie') {                                        // meet in the middle, squash, hold, bounce back
+    const kk = u < 0.2 ? ease(u / 0.2) : u < 0.55 ? 1 : Math.max(-0.12, 1 - backOut(clamp((u - 0.55) / 0.34, 0, 1)));
+    const imp = u < 0.16 ? 0 : u < 0.28 ? ease((u - 0.16) / 0.12) : u < 0.52 ? 1 : 1 - ease(clamp((u - 0.52) / 0.1, 0, 1));
+    const span = gap * 0.36;
+    you.x = xL + span * kk; bot.x = xR - span * kk;
+    you.sx = bot.sx = 1 + 0.2 * imp; you.sy = bot.sy = 1 - 0.28 * imp;
+    you.rot = -0.1 * kk; bot.rot = 0.1 * kk; you.y = bot.y = y + R * 0.06 * imp;
+    P.hx = meet; P.hy = y; return P;
+  }
+  const youWin = rps.result === 'you', win = youWin ? you : bot, lose = youWin ? bot : you;
+  const kind = youWin ? rps.player : rps.bot, dir = youWin ? 1 : -1;
+  const homeW = youWin ? xL : xR, homeL = youWin ? xR : xL;
+  const wind = ease(clamp(u / 0.34, 0, 1));
+  const imp = Math.exp(-((u - 0.34) * (u - 0.34)) / 0.012);
+  // meet near the middle with a small gap so the two labels stay apart
+  const wAt = meet - dir * R * 0.15, lAt = meet + dir * R * 0.55;
+  if (kind === 'paper') {                                            // paper travels onto the rock; the rock shrinks under it
+    const cover = ease(clamp(u / 0.7, 0, 1));
+    const shrink = ease(clamp((u - 0.32) / 0.5, 0, 1));
+    const spot = homeL + (meet - homeL) * Math.min(1, cover * 1.15);
+    lose.x = spot; lose.sc = Math.max(0.1, 1 - 0.9 * shrink); lose.a = 1 - shrink; lose.rot = -dir * 0.25 * shrink;
+    win.x = homeW + (spot - homeW) * cover; win.sc = 1 + 0.32 * cover; win.rot = -dir * 0.12 * (1 - cover);
+    P.hx = spot; P.hy = y;
+  } else if (kind === 'scissors') {                                  // scissors snap across paper; the paper splits and falls
+    win.x = homeW + (wAt - homeW) * wind; win.rot = -dir * 0.62 * Math.sin(clamp(u / 0.4, 0, 1) * Math.PI); win.sc = 1 + 0.06 * wind;
+    lose.x = homeL + (lAt - homeL) * wind;
+    const cut = ease(clamp((u - 0.28) / 0.5, 0, 1));
+    lose.split = cut; lose.a = 1 - 0.45 * ease(clamp((cut - 0.35) / 0.65, 0, 1));
+    P.slash = cut <= 0 ? 0 : Math.min(1, cut * 3.5) * (1 - cut * 0.25); P.hx = lose.x; P.hy = lose.y;
+  } else {                                                           // rock lunges into scissors, squashes, then the scissors shatter
+    const after = ease(clamp((u - 0.4) / 0.48, 0, 1));
+    const settle = wind * (1 - after * 0.04);
+    win.x = homeW + (wAt - homeW) * settle; win.rot = -dir * 0.22 * settle;
+    win.sx = 1 + 0.34 * imp; win.sy = 1 - 0.28 * imp; win.sc = 1 + 0.1 * wind;
+    lose.x = homeL + (lAt - homeL) * Math.min(1, wind * 1.05);
+    lose.shards = after; lose.rot = dir * 0.15 * after;
+    P.flash = imp; P.hx = (win.x + lose.x) * 0.5; P.hy = y;
+  }
+  return P;
+}
+function drawRpsScore() {
+  const sc = rpsShownScore(), t = rps.phase === 'showdown' ? rpsPhaseT() : RPS.scoreAt;
+  const pop = rps.phase === 'showdown' ? clamp((t - RPS.scoreAt) / 0.28, 0, 1) : 1;
+  const bump = pop > 0 && pop < 1 ? 1 + 0.16 * Math.sin(pop * Math.PI) : 1;
+  ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.translate(W / 2, H * 0.875); ctx.scale(bump, bump);
+  ctx.fillStyle = 'rgba(255,255,255,0.72)';
+  const s = `me ${sc.me}  \u00b7  you ${sc.you}   (first to ${RPS.toWin})`;
+  rpsTextFit(s, 600, 2.8 * U, W * 0.7); ctx.fillText(s, 0, 0); ctx.restore();
+}
+function sdCaption(hand, who, kind, x, y) {
+  const fade = hand.shards > 0 ? Math.max(0, 1 - hand.shards * 2.6) : hand.split > 0 ? Math.max(0, 1 - hand.split * 1.25) : hand.a;
+  if (fade < 0.08 || !kind) return;
+  ctx.save(); ctx.globalAlpha = fade; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
+  rpsTextFit(who, 800, 3.6 * U, W * 0.28); ctx.fillText(who, x, y);
+  ctx.fillStyle = 'rgba(255,255,255,0.7)'; const nm = kind.toUpperCase();
+  rpsTextFit(nm, 700, 2.5 * U, W * 0.28); ctx.fillText(nm, x, y + sdPose.R * 0.36); ctx.restore();
+}
+function drawSdLabels() {
+  const P = sdPose, y = H * 0.78;
+  let xl = P.you.x, xr = P.bot.x, gap = Math.max(P.R * 2.2, 16 * U);
+  if (xr - xl < gap) { const m = (xl + xr) / 2; xl = m - gap / 2; xr = m + gap / 2; }
+  const pad = W * 0.1; xl = clamp(xl, pad, W - pad); xr = clamp(xr, pad, W - pad);
+  sdCaption(P.you, 'YOU', rps.player, xl, y); sdCaption(P.bot, 'GROK', rps.bot, xr, y);
+}
+function drawRpsShowdown(L, bl, t) {
+  const P = rpsShowdownPose(t);
+  const blit = (kind, hand) => { if (hand.a < 0.02 && hand.shards < 0.02 && hand.split < 0.02) return; drawRpsHand(kind, hand.x, hand.y, P.R, hand.rot, hand.sc, '#fff', hand.a, hand); };
+  if (rps.result === 'bot') { blit(rps.player, P.you); blit(rps.bot, P.bot); } else { blit(rps.bot, P.bot); blit(rps.player, P.you); }
+  if (P.flash > 0.05) {
+    ctx.save(); ctx.globalAlpha = Math.min(0.9, P.flash); ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(2, P.R * 0.055);
+    ctx.beginPath(); ctx.arc(P.hx, P.hy, P.R * (0.35 + 0.85 * (1 - Math.min(P.flash, 1))), 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+  }
+  if (P.slash > 0.04) {
+    const h = rps.result === 'you' ? P.bot : P.you;
+    ctx.save(); ctx.translate(h.x, h.y); ctx.rotate(-0.55); ctx.globalAlpha = P.slash; ctx.strokeStyle = '#fff'; ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(2, P.R * 0.07); ctx.beginPath(); ctx.moveTo(-P.R * 1.05, 0); ctx.lineTo(P.R * 1.05, 0); ctx.stroke(); ctx.restore();
+  }
+  drawSdLabels();
+  if (P.banner > 0.02) {
+    const title = rps.result === 'you' ? 'YOU WIN' : rps.result === 'bot' ? 'GROK WINS' : 'TIE';
+    const col = rps.result === 'you' ? '#3EC46D' : rps.result === 'bot' ? '#FFB86B' : '#fff';
+    ctx.save(); ctx.translate(W / 2, H * 0.115); const k = clamp(P.banner, 0, 1.25); ctx.scale(0.55 + 0.45 * k, 0.55 + 0.45 * k);
+    ctx.globalAlpha = Math.min(1, P.banner * 1.5); ctx.fillStyle = col; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    rpsTextFit(title, 900, 9.2 * U, W * 0.88); ctx.fillText(title, 0, 0); ctx.restore();
+  }
+  drawRpsScore();
+}
 function drawRps(L, bl) {
   const t = rpsPhaseT();
+  if (rps.phase === 'showdown') { drawRpsShowdown(L, bl, t); return; }
   // the face: two pill eyes on the left
   ctx.fillStyle = '#fff'; ctx.strokeStyle = '#fff';
   ctx.save(); ctx.translate(L.x, L.y); ctx.rotate(cur.frot); ctx.scale(cur.fs, cur.fs);
@@ -1141,10 +1291,7 @@ function drawRps(L, bl) {
   ctx.fillStyle = b.hot ? '#FFD84A' : b.res === 'you' ? '#3EC46D' : b.res === 'bot' ? '#FFB86B' : '#fff';
   rpsTextFit(b.big, 900, bigPx, W * 0.9); ctx.fillText(b.big, 0, 0); ctx.restore();
   if (b.sub) { ctx.fillStyle = 'rgba(255,255,255,0.6)'; rpsTextFit(b.sub, 600, 3.2 * U, W * 0.86); ctx.fillText(b.sub, bx, by + 7.6 * U); }
-  // score: me vs you, best of 3
-  ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(255,255,255,0.55)';
-  const s = `me ${rps.me}  \u00b7  you ${rps.you}   (first to ${RPS.toWin})`;
-  rpsTextFit(s, 600, 2.7 * U, W * 0.6); ctx.fillText(s, W / 2, H * 0.875);
+  drawRpsScore();
 }
 function drawRpsInvite() {                                            // small, calm invitation chip above the wordmark
   const t = now - rps.invite; if (rps.on || t < 0 || t > RPS.inviteSec) return;
@@ -1175,12 +1322,27 @@ function rpsSimFist(opt) {                                             // test h
   if (APP) console.info('perf rps sim ' + JSON.stringify({ gesture: rps.sim.gesture, score: rps.sim.score, mask: rps.sim.mask, cool: +Math.max(0, rps.coolUntil - now).toFixed(1), allowed: rpsFistAllowed(), canStart: rpsCanStart(), cam: !!SENSE.cam }));
   return true;
 }
+function rpsJumpReveal(player, bot, pin) {                          // ?rpsReveal=rock,scissors — straight into the showdown
+  player = String(player || '').toLowerCase().trim(); bot = String(bot || '').toLowerCase().trim();
+  if (!RPS_THROWS.includes(player) || !RPS_THROWS.includes(bot)) return false;
+  const p = pin == null || pin === '' || !isFinite(+pin) ? null : +pin;
+  if (adv) advCancel(); if (card.open) closeCard(); if (trans) { trans = null; enter = 1; swipeX = swipeSq = swipeRot = 0; }
+  sleeping = false; move = null; lookOverride = null;
+  const result = player === bot ? 'tie' : RPS_BEATS[bot] === player ? 'bot' : 'you';
+  Object.assign(rps, { on: true, phase: 'showdown', t0: now, round: 1, me: result === 'bot' ? 1 : 0, you: result === 'you' ? 1 : 0, misses: 0,
+    bot: bot, player: player, result: result, why: 'debug', fistSince: 0, fistN: 0, fistMiss: 0, reads: 1, rematchUntil: 0, invite: -1e9, pin: p });
+  rps.votes.rock = rps.votes.paper = rps.votes.scissors = 0;
+  rps.hist = [{ bot: bot, player: player, result: result }];
+  lastInput = now; return true;
+}
 function rpsExpose(G) {
   G.rpsSimFist = rpsSimFist;
   G.rpsStart = () => rpsStart('debug');
   G.rps = { start: () => rpsStart('debug'), stop: () => rpsEnd('debug'), mock: g => { rps.mock = g || null; return rps.mock; }, forceBot: g => { rps.forceBot = g || null; return rps.forceBot; },
     invite: () => { rps.invite = now; }, simFist: rpsSimFist, fistish: rpsFistish, classify: rpsClassify, random: rpsRandomThrow,
-    get state() { return { on: rps.on, phase: rps.phase, t: +rpsPhaseT().toFixed(2), round: rps.round, me: rps.me, you: rps.you, misses: rps.misses, bot: rps.bot, player: rps.player, result: rps.result, votes: Object.assign({}, rps.votes), fistSince: rps.fistSince, fistN: rps.fistN, fistMiss: rps.fistMiss, cool: Math.max(0, rps.coolUntil - now), clockTap: miniRect && { x: miniRect.x / DPR, y: miniRect.y / DPR }, boost: !!SENSE.handsBoost, hist: rps.hist.slice() }; } };
+    reveal: (player, bot, pin) => rpsJumpReveal(player, bot, pin),
+    timing: { showdownSec: RPS.showdownSec, scoreAt: RPS.scoreAt, sdHold: RPS.sdHold, sdClash: RPS.sdClash },
+    get state() { const sc = rpsShownScore(); return { on: rps.on, phase: rps.phase, t: +rpsPhaseT().toFixed(2), round: rps.round, me: rps.me, you: rps.you, shownMe: sc.me, shownYou: sc.you, misses: rps.misses, bot: rps.bot, player: rps.player, result: rps.result, pin: rps.pin, votes: Object.assign({}, rps.votes), fistSince: rps.fistSince, fistN: rps.fistN, fistMiss: rps.fistMiss, cool: Math.max(0, rps.coolUntil - now), clockTap: miniRect && { x: miniRect.x / DPR, y: miniRect.y / DPR }, boost: !!SENSE.handsBoost, hist: rps.hist.slice() }; } };
 }
 
 // ---------- v1.5: PONG - two roster bots play a live, simulated game around the clock ----------
@@ -4351,7 +4513,12 @@ window.grokbot = { get pong() { return { phase: pong.phase, a: pong.sides[0].ch 
 v16Expose();
 newsExpose();
 rpsExpose(window.grokbot);
-if (Q.get('rps') === '1') setTimeout(() => rpsStart('debug'), +Q.get('rpsDelay') || 1500);
+if (Q.get('rps') === '1' && !Q.get('rpsReveal')) setTimeout(() => rpsStart('debug'), +Q.get('rpsDelay') || 1500);
+(function () {
+  const rv = Q.get('rpsReveal'); if (!rv) return;
+  const parts = rv.split(','), at = Q.get('rpsAt');
+  setTimeout(() => rpsJumpReveal(parts[0], parts[1], at), 40);
+})();
 // Camera/mic sensing only in the app (or ?sense=1 on a secure http(s) origin). Any failure = silent v1.0 behaviour.
 const SENSE_ON = APP || Q.get('sense') === '1';
 let senseWanted = SENSE_ON;
